@@ -69,10 +69,19 @@ LONG_SECTION_TOKEN_THRESHOLD = 2000  # split by paragraphs first if above
 QWEN_MODEL = "Qwen/Qwen2-7B-Instruct"
 
 # ---- Stage 3: Embeddings and Supabase ----
-# OpenAI embeddings (read from env: OPENAI_API_KEY)
-# Using text-embedding-3-small for 1536-dim vectors.
-AZURE_EMBEDDING_MODEL = "text-embedding-3-small"
-AZURE_EMBEDDING_DIMENSION = 1536
+# Embedding backend: "openai" (text-embedding-3-small) or "multilingual" (e5-multilingual / bge-m3)
+# Multilingual improves Arabic–English alignment; requires re-embedding all chunks when switched.
+USE_MULTILINGUAL_EMBEDDING = _env_bool("USE_MULTILINGUAL_EMBEDDING", False)
+MULTILINGUAL_EMBEDDING_MODEL = os.getenv("MULTILINGUAL_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+# Dimension for multilingual-e5-small is 384; bge-m3 can be 1024
+MULTILINGUAL_EMBEDDING_DIMENSION = int(os.getenv("MULTILINGUAL_EMBEDDING_DIMENSION", "384"))
+# OpenAI embeddings (read from env: OPENAI_API_KEY) when USE_MULTILINGUAL_EMBEDDING is False
+AZURE_EMBEDDING_MODEL = os.getenv("AZURE_EMBEDDING_MODEL", "text-embedding-3-small")
+AZURE_EMBEDDING_DIMENSION = int(os.getenv("AZURE_EMBEDDING_DIMENSION", "1536"))
+# Effective dimension used by embed_query/embed_chunk (callers use this for vector DB)
+EMBEDDING_DIMENSION = (
+    MULTILINGUAL_EMBEDDING_DIMENSION if USE_MULTILINGUAL_EMBEDDING else AZURE_EMBEDDING_DIMENSION
+)
 
 # Supabase (read from env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 # Batch size for chunk inserts
@@ -98,12 +107,50 @@ TOP_K_DEFINITION = 8  # For definition queries
 TOP_K_ANALYSIS = 5    # For analysis/explanation queries
 TOP_K_LOOKUP = 3       # For simple lookup queries
 
+# Query normalization (synonyms, legal terms, acronyms) before embedding
+ENABLE_QUERY_NORMALIZE_SYNONYMS = _env_bool("ENABLE_QUERY_NORMALIZE_SYNONYMS", True)
+ENABLE_QUERY_NORMALIZE_LEGAL = _env_bool("ENABLE_QUERY_NORMALIZE_LEGAL", True)
+ENABLE_QUERY_NORMALIZE_ACRONYMS = _env_bool("ENABLE_QUERY_NORMALIZE_ACRONYMS", True)
+# Optional overrides: JSON path or env for synonym/legal/acronym dicts (else query_normalize uses built-in defaults)
+QUERY_NORMALIZE_SYNONYMS: dict[str, str] = {}
+QUERY_NORMALIZE_LEGAL_TERMS: dict[str, str] = {}
+QUERY_NORMALIZE_ACRONYMS: dict[str, str] = {}
+_json_path = os.getenv("QUERY_NORMALIZE_SYNONYMS_JSON")
+if _json_path:
+    try:
+        import json
+        with open(_json_path, encoding="utf-8") as f:
+            QUERY_NORMALIZE_SYNONYMS = json.load(f)
+    except Exception:
+        pass
+_json_legal = os.getenv("QUERY_NORMALIZE_LEGAL_JSON")
+if _json_legal:
+    try:
+        import json
+        with open(_json_legal, encoding="utf-8") as f:
+            QUERY_NORMALIZE_LEGAL_TERMS = json.load(f)
+    except Exception:
+        pass
+_json_acr = os.getenv("QUERY_NORMALIZE_ACRONYMS_JSON")
+if _json_acr:
+    try:
+        import json
+        with open(_json_acr, encoding="utf-8") as f:
+            QUERY_NORMALIZE_ACRONYMS = json.load(f)
+    except Exception:
+        pass
+# If no JSON overrides, query_normalize.py uses its built-in DOMAIN_SYNONYMS, LEGAL_TERM_MAP, ACRONYM_EXPANSIONS
+
 # Query expansion settings
 ENABLE_QUERY_EXPANSION = True
 MAX_QUERY_VARIATIONS = 3  # Including original query
 # RRF merge when combining multi-query results (reciprocal rank fusion)
 ENABLE_RRF_MERGE = _env_bool("ENABLE_RRF_MERGE", True)
 RRF_K = int(os.getenv("RRF_K", "60"))  # RRF constant; higher k reduces rank sensitivity
+# Arabic: dual retrieve (embed AR + EN, fetch both, RRF merge)
+ENABLE_ARABIC_DUAL_RETRIEVE = _env_bool("ENABLE_ARABIC_DUAL_RETRIEVE", True)
+# Arabic: translate query to English before second retrieval (requires OPENAI_API_KEY)
+ENABLE_ARABIC_TRANSLATE_FOR_RETRIEVAL = _env_bool("ENABLE_ARABIC_TRANSLATE_FOR_RETRIEVAL", False)
 
 # Hybrid search settings (keyword search uses section_title; keep True to search/retrieve by section_title)
 ENABLE_HYBRID_SEARCH = True
@@ -236,8 +283,10 @@ HYDE_PROMPT_PREFIX = os.getenv(
 # Blend weights for query vs hypothetical embedding (retrieval only)
 HYDE_QUERY_WEIGHT = _env_float("HYDE_QUERY_WEIGHT", 0.5)
 HYDE_HYPO_WEIGHT = _env_float("HYDE_HYPO_WEIGHT", 0.5)
-ENABLE_CROSS_ENCODER_RERANK = _env_bool("ENABLE_CROSS_ENCODER_RERANK", True)
+ENABLE_CROSS_ENCODER_RERANK = _env_bool("ENABLE_CROSS_ENCODER_RERANK", False)
 CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+# Boost for chunks in "Definitions" section (section_title or content contains "Definitions")
+RERANKER_DEFINITIONS_BOOST = _env_float("RERANKER_DEFINITIONS_BOOST", 0.15)
 ENABLE_SELF_RAG = _env_bool("ENABLE_SELF_RAG", True)
 SELF_RAG_MAX_RETRIES = int(os.getenv("SELF_RAG_MAX_RETRIES", "1"))
 SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
@@ -326,6 +375,8 @@ SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT = (
     "If the question asks what X is or the definition of X (including acronyms like NORA), you may answer only if the context contains "
     "an explicit definition or clear explanation of X (e.g. \"X is …\", \"X stands for …\", \"X refers to …\"). "
     "If the context does not define or explain X, respond exactly: Information not found in SAMA/NORA documents. Do not infer or invent a definition.\n\n"
+    "If the answer is not in the context, return ONLY: Information not found in SAMA/NORA documents. Do not infer. Do not add any other sentence.\n\n"
+    "Do not generalize. Quote or restate the structure from the context. This system answers only about SAMA/NORA Saudi regulatory documents.\n\n"
     "Before answering, check: Is the answer directly supported by a phrase in the context? If not, respond exactly: Information not found in SAMA/NORA documents.\n\n"
     "CRITICAL: Every sentence in your answer MUST end with (Page X) or (Pages X–Y). Where possible, support your answer with a direct quote from the context, "
     "followed by (Page X) or (Pages X–Y). Do not output any sentence without a citation.\n\n"
@@ -354,6 +405,47 @@ SIMPLE_RAG_SYSTEM_PROMPT_METADATA = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_METADATA",
     "For questions about law number, decree number, or date: extract the exact text from document headers or first articles and cite (Page X) or (Source: provided context).",
 )
+# Post-generation: override to NOT FOUND if answer embedding vs chunk embeddings max similarity below threshold
+ENABLE_POST_GEN_SIMILARITY_CHECK = _env_bool("ENABLE_POST_GEN_SIMILARITY_CHECK", False)
+POST_GEN_SIMILARITY_THRESHOLD = _env_float("POST_GEN_SIMILARITY_THRESHOLD", 0.5)
+# Answer language: for Arabic query, require answer to be primarily Arabic (script ratio)
+ENABLE_ANSWER_LANGUAGE_CHECK = _env_bool("ENABLE_ANSWER_LANGUAGE_CHECK", True)
+ANSWER_ARABIC_SCRIPT_RATIO_MIN = _env_float("ANSWER_ARABIC_SCRIPT_RATIO_MIN", 0.3)
+# When Arabic query and answer is English, translate answer to Arabic instead of returning not_found
+ENABLE_TRANSLATE_BACK = _env_bool("ENABLE_TRANSLATE_BACK", False)
+# Optional structured extraction template for synthesis (Article/Clause/Requirement)
+SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE = os.getenv(
+    "SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE",
+    "Where applicable use: Article: … Clause: … Requirement: …",
+)
+# Jurisdiction anchoring in prompt
+SIMPLE_RAG_JURISDICTION_ANCHOR = os.getenv(
+    "SIMPLE_RAG_JURISDICTION_ANCHOR",
+    "Confirm jurisdiction is Saudi Arabia / SAMA when relevant.",
+)
+# Semantic grounding (answer vs chunk embeddings); when True, complement or replace literal grounding
+USE_SEMANTIC_GROUNDING = _env_bool("USE_SEMANTIC_GROUNDING", False)
+GROUNDING_SOFT_FAIL_THRESHOLD = _env_float("GROUNDING_SOFT_FAIL_THRESHOLD", 0.5)
+GROUNDING_HARD_FAIL_THRESHOLD = _env_float("GROUNDING_HARD_FAIL_THRESHOLD", 0.35)
+GROUNDING_PARTIAL_BAND = _env_bool("GROUNDING_PARTIAL_BAND", True)
+SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION = _env_float("SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION", 0.4)
+SEMANTIC_GROUNDING_THRESHOLD_METADATA = _env_float("SEMANTIC_GROUNDING_THRESHOLD_METADATA", 0.4)
+SEMANTIC_GROUNDING_THRESHOLD_SYNTHESIS = _env_float("SEMANTIC_GROUNDING_THRESHOLD_SYNTHESIS", 0.45)
+SEMANTIC_GROUNDING_THRESHOLD_OTHER = _env_float("SEMANTIC_GROUNDING_THRESHOLD_OTHER", 0.45)
+SIMPLE_RAG_UNCERTAINTY_PHRASE = os.getenv("SIMPLE_RAG_UNCERTAINTY_PHRASE", "")
+# Dynamic top_k: if top chunk similarity below threshold, re-fetch with k * multiplier
+DYNAMIC_TOP_K_ENABLED = _env_bool("DYNAMIC_TOP_K_ENABLED", False)
+DYNAMIC_TOP_K_SIMILARITY_THRESHOLD = _env_float("DYNAMIC_TOP_K_SIMILARITY_THRESHOLD", 0.55)
+DYNAMIC_TOP_K_MULTIPLIER = _env_float("DYNAMIC_TOP_K_MULTIPLIER", 1.5)
+# Ambiguity: very short query may get clarification prompt
+AMBIGUITY_DETECTION_ENABLED = _env_bool("AMBIGUITY_DETECTION_ENABLED", False)
+AMBIGUITY_MAX_WORDS = int(os.getenv("AMBIGUITY_MAX_WORDS", "3"))
+SIMPLE_RAG_CLARIFICATION_MESSAGE = os.getenv(
+    "SIMPLE_RAG_CLARIFICATION_MESSAGE",
+    "Which aspect do you mean: licensing, capital, or reporting? Please ask a more specific question.",
+)
+# Return confidence score in answer_query result (0-1)
+RETURN_CONFIDENCE_SCORE = _env_bool("RETURN_CONFIDENCE_SCORE", False)
 # Arabic queries: reinforce no translation beyond context (env-overridable)
 SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX",

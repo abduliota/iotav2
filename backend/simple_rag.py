@@ -20,7 +20,23 @@ load_dotenv()
 import torch
 
 from config import (
+    AMBIGUITY_DETECTION_ENABLED,
+    AMBIGUITY_MAX_WORDS,
+    ANSWER_ARABIC_SCRIPT_RATIO_MIN,
     BACKEND_DIR,
+    DYNAMIC_TOP_K_ENABLED,
+    DYNAMIC_TOP_K_MULTIPLIER,
+    DYNAMIC_TOP_K_SIMILARITY_THRESHOLD,
+    ENABLE_ANSWER_LANGUAGE_CHECK,
+    ENABLE_ARABIC_DUAL_RETRIEVE,
+    ENABLE_POST_GEN_SIMILARITY_CHECK,
+    ENABLE_TRANSLATE_BACK,
+    ENABLE_RERANKING,
+    POST_GEN_SIMILARITY_THRESHOLD,
+    RETURN_CONFIDENCE_SCORE,
+    RRF_K,
+    SIMPLE_RAG_CLARIFICATION_MESSAGE,
+    USE_SEMANTIC_GROUNDING,
     SNIPPET_CHAR_LIMIT,
     SIMPLE_RAG_ANSWER_MARKER,
     SIMPLE_RAG_CONFABULATION_BLOCKLIST,
@@ -42,13 +58,20 @@ from config import (
     SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION,
     SIMPLE_RAG_SYSTEM_PROMPT_METADATA,
     SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS,
+    SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE,
+    SIMPLE_RAG_JURISDICTION_ANCHOR,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
     SIMPLE_RAG_TOP_K,
     SIMPLE_RAG_TOP_K_SYNTHESIS,
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
     TOP_K_DEFINITION,
 )
-from embeddings import embed_query
+from embeddings import embed_chunk, embed_query
+from query_normalize import normalize_query_for_embedding
+from query_multilingual import merge_chunks_rrf, translate_arabic_to_english
+from grounding import grounding_decision
+from rerank import rerank_chunks
+from translate import translate_to_arabic
 from supabase_client import get_client
 from qwen_model import _load_qwen
 from transformers import GenerationConfig
@@ -150,7 +173,7 @@ def fetch_chunks(query_embedding: list[float], limit: int | None = None) -> list
 
 
 def build_context(chunks: list[dict[str, Any]], max_content_chars: int | None = None) -> str:
-    """Turn retrieved chunks into one context string (Document, Pages, Content)."""
+    """Turn retrieved chunks into one context string (Document, Pages, Article, Content)."""
     if max_content_chars is None:
         max_content_chars = SIMPLE_RAG_MAX_CONTENT_CHARS
     parts: list[str] = []
@@ -158,12 +181,14 @@ def build_context(chunks: list[dict[str, Any]], max_content_chars: int | None = 
         doc = row.get("document_name", "")
         start = row.get("page_start", 0)
         end = row.get("page_end", 0)
+        article_id = row.get("article_id") or row.get("article_number") or row.get("article")
         content = (row.get("content") or "").strip()
         if len(content) > max_content_chars:
             content = content[:max_content_chars] + "..."
-        parts.append(
-            f"[Passage {i}] Document: {doc}, Pages: {start}–{end}\nContent:\n{content}"
-        )
+        header = f"[Passage {i}] Document: {doc}, Pages: {start}–{end}"
+        if article_id:
+            header += f", Article: {article_id}"
+        parts.append(header + f"\nContent:\n{content}")
     return "\n\n".join(parts)
 
 
@@ -576,6 +601,10 @@ def generate_answer_simple(
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_METADATA
     if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS
+    if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE
+    if SIMPLE_RAG_JURISDICTION_ANCHOR:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_JURISDICTION_ANCHOR
     if _is_arabic_query(user_query) and SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX
     user_template = _get_user_template()
@@ -651,18 +680,44 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         k = TOP_K_DEFINITION
     else:
         k = SIMPLE_RAG_TOP_K
+    q_for_embed = normalize_query_for_embedding(q)
     try:
-        query_embedding = embed_query(q)
+        query_embedding = embed_query(q_for_embed)
     except Exception as e:
         log.exception("embed_query failed: %s", e)
         raise
     chunks = fetch_chunks(query_embedding, limit=k)
+    if DYNAMIC_TOP_K_ENABLED and chunks:
+        top_sim = chunks[0].get("cosine_similarity") or chunks[0].get("similarity")
+        if top_sim is not None and float(top_sim) < DYNAMIC_TOP_K_SIMILARITY_THRESHOLD:
+            k2 = min(int(k * DYNAMIC_TOP_K_MULTIPLIER), 20)
+            if k2 > k:
+                chunks = fetch_chunks(query_embedding, limit=k2)
+                log.debug("dynamic_top_k: re-fetched with k=%d", k2)
+    if _is_arabic_query(q) and ENABLE_ARABIC_DUAL_RETRIEVE:
+        translated_en = translate_arabic_to_english(q)
+        if translated_en:
+            try:
+                en_embedding = embed_query(translated_en)
+                chunks_en = fetch_chunks(en_embedding, limit=k)
+                chunks = merge_chunks_rrf([chunks, chunks_en], rrf_k=RRF_K, top_n=k)
+            except Exception as e:
+                log.debug("dual_retrieve (EN) failed, using single: %s", e)
+    if ENABLE_RERANKING and chunks:
+        chunks = rerank_chunks(q, chunks, top_n=k)
     log.debug("retrieval: %d chunks", len(chunks))
     if chunks:
         top_docs = [(r.get("document_name"), r.get("page_start"), r.get("page_end")) for r in chunks[:3]]
         log.debug("top chunks: %s", top_docs)
+    if _is_arabic_query(q) and chunks:
+        has_arabic = any((c.get("content") or "").strip().startswith(("\u0600", "\u0601")) for c in chunks[:5])
+        if not has_arabic:
+            log.info("retrieval_language_consistency: Arabic query but no Arabic chunk in top; continuing with EN context")
 
     if not chunks:
+        if AMBIGUITY_DETECTION_ENABLED and len(q.split()) <= AMBIGUITY_MAX_WORDS:
+            log.info("ambiguity: no chunks for short query; returning clarification")
+            return {"answer": SIMPLE_RAG_CLARIFICATION_MESSAGE, "sources": []}
         log.info("no chunks; returning not_found")
         return {
             "answer": SIMPLE_RAG_NOT_FOUND_MESSAGE,
@@ -678,6 +733,23 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     raw_preview = (answer or "")[:300] + ("..." if len(answer or "") > 300 else "")
     log.debug("raw_answer (preview): %s", raw_preview)
 
+    if ENABLE_POST_GEN_SIMILARITY_CHECK and not _is_not_found_answer(answer):
+        if not _post_gen_similarity_ok(answer, chunks, POST_GEN_SIMILARITY_THRESHOLD):
+            log.info("post_gen_similarity: answer not similar enough to chunks; overriding to not_found")
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+    if _is_arabic_query(q) and ENABLE_ANSWER_LANGUAGE_CHECK and not _is_not_found_answer(answer):
+        if not _is_answer_primarily_arabic(answer, ANSWER_ARABIC_SCRIPT_RATIO_MIN):
+            if ENABLE_TRANSLATE_BACK:
+                translated = translate_to_arabic(answer)
+                if translated:
+                    answer = translated
+                    log.info("answer_language_check: translated answer to Arabic")
+                else:
+                    answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
+            else:
+                log.info("answer_language_check: Arabic query but answer not primarily Arabic; overriding to Arabic not_found")
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
+
     answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
@@ -692,7 +764,18 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
                 answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
 
-    # Grounding check: fact_definition/metadata use relaxed grounding; synthesis and others use strict
+    _grounding_confidence: float = 1.0
+    # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
+    if USE_SEMANTIC_GROUNDING and not _is_not_found_answer(answer):
+        decision, sem_score, soft_msg = grounding_decision(answer, context_text, chunks, intent)
+        _grounding_confidence = sem_score
+        if decision == "hard_fail":
+            log.info("semantic_grounding: hard_fail (score=%.3f); overriding to not_found", sem_score)
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+            _grounding_confidence = 0.0
+        elif decision == "soft_fail" and soft_msg and "(Source:" not in answer:
+            answer = answer.rstrip().rstrip(".") + soft_msg
+    # Literal grounding: fact_definition/metadata use relaxed; synthesis and others use strict
     if not _is_not_found_answer(answer):
         if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
             if not _is_answer_loosely_grounded(answer, context_text):
@@ -733,11 +816,15 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             "document_name": row.get("document_name"),
             "page_start": row.get("page_start"),
             "page_end": row.get("page_end"),
+            "article_id": row.get("article_id") or row.get("article_number") or row.get("article"),
             "snippet": (row.get("snippet") or (row.get("content") or "")[:snippet_limit]),
         }
         for row in chunks
     ]
-    return {"answer": answer, "sources": sources, "cited_sentences": cited_sentences}
+    out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences}
+    if RETURN_CONFIDENCE_SCORE:
+        out["confidence"] = 0.0 if _is_not_found_answer(answer) else _grounding_confidence
+    return out
 
 
 # Max characters of snippet to print per source in CLI (readability)
@@ -845,6 +932,53 @@ def _is_not_found_answer(answer: str) -> bool:
         return False
     a = answer.strip()
     return a == SIMPLE_RAG_NOT_FOUND_MESSAGE or a == SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
+
+
+def _is_answer_primarily_arabic(text: str, min_ratio: float = 0.3) -> bool:
+    """True if at least min_ratio of alphabetic characters are in Arabic script (U+0600–U+06FF)."""
+    if not text or not text.strip():
+        return False
+    ar_count = sum(1 for c in text if "\u0600" <= c <= "\u06FF")
+    alpha_count = sum(1 for c in text if c.isalpha())
+    if alpha_count == 0:
+        return False
+    return (ar_count / alpha_count) >= min_ratio
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _post_gen_similarity_ok(
+    answer: str,
+    chunks: list[dict[str, Any]],
+    threshold: float,
+) -> bool:
+    """True if max cosine similarity between answer embedding and chunk content embeddings >= threshold."""
+    if not answer or not chunks or _is_not_found_answer(answer):
+        return True
+    try:
+        answer_emb = embed_query(re.sub(r"\(Page\s+\d+\)|\(Pages\s+\d+\s*[–\-]\s*\d+\)", "", answer, flags=re.IGNORECASE))
+        best = -1.0
+        for c in chunks[:10]:
+            content = (c.get("content") or "").strip()[:2000]
+            if not content:
+                continue
+            chunk_emb = embed_chunk(content)
+            sim = _cosine_similarity(answer_emb, chunk_emb)
+            if sim > best:
+                best = sim
+        return best >= threshold
+    except Exception:
+        return True
 
 
 def _print_sources(result: dict[str, Any]) -> None:
