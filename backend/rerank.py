@@ -15,6 +15,29 @@ def _tokenize_for_title_match(text: str) -> set[str]:
     return set(tokens)
 
 
+def _normalize_for_exact_match(text: str) -> str:
+    """Normalize for exact/containment comparison: lowercase, collapse whitespace."""
+    if not text:
+        return ""
+    return " ".join((text or "").lower().split())
+
+
+def _title_exact_match_boost(query: str, chunk: dict[str, Any], boost: float) -> float:
+    """Return boost if query (normalized) equals or is contained in section_title or document_name."""
+    if not query or boost <= 0:
+        return 0.0
+    qn = _normalize_for_exact_match(query)
+    if not qn:
+        return 0.0
+    title = _normalize_for_exact_match(chunk.get("section_title") or "")
+    doc_name = _normalize_for_exact_match(chunk.get("document_name") or "")
+    if title and (qn == title or qn in title or title in qn):
+        return boost
+    if doc_name and (qn == doc_name or qn in doc_name or doc_name in qn):
+        return boost
+    return 0.0
+
+
 def _title_match_boost(query: str, chunk: dict[str, Any], min_match: int, boost: float) -> float:
     """Return boost if at least min_match query tokens appear in chunk's section_title."""
     if min_match < 1 or boost <= 0:
@@ -119,6 +142,7 @@ def rerank_chunks(
     definitions_boost: float = 0.15,
     top_n: int | None = None,
     preferred_doc_names: list[str] | None = None,
+    intent: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Rerank chunks: optionally by cross-encoder (query, content), then add Definitions
@@ -133,19 +157,23 @@ def rerank_chunks(
             ENABLE_KEYWORD_DOCUMENT_BOOST,
             ENABLE_RERANKER_DOMINANCE_BOOST,
             ENABLE_RERANKER_TITLE_BOOST,
+            ENABLE_RERANKER_TITLE_EXACT_BOOST,
             RERANKER_DEFINITIONS_BOOST,
             RERANKER_DOMINANT_DOC_BOOST,
             RERANKER_KEYWORD_DOCUMENT_BOOST,
             RERANKER_TITLE_KEYWORD_MIN_MATCH,
             RERANKER_TITLE_MATCH_BOOST,
+            RERANKER_TITLE_EXACT_MATCH_BOOST,
         )
         use_cross_encoder = use_cross_encoder and ENABLE_CROSS_ENCODER_RERANK
         definitions_boost = RERANKER_DEFINITIONS_BOOST
     except ImportError:
         ENABLE_RERANKER_TITLE_BOOST = False
+        ENABLE_RERANKER_TITLE_EXACT_BOOST = False
         ENABLE_RERANKER_DOMINANCE_BOOST = False
         ENABLE_KEYWORD_DOCUMENT_BOOST = False
         RERANKER_TITLE_MATCH_BOOST = 0.1
+        RERANKER_TITLE_EXACT_MATCH_BOOST = 0.2
         RERANKER_TITLE_KEYWORD_MIN_MATCH = 1
         RERANKER_DOMINANT_DOC_BOOST = 0.05
         RERANKER_KEYWORD_DOCUMENT_BOOST = 0.12
@@ -161,6 +189,8 @@ def rerank_chunks(
             s += _title_match_boost(
                 query, chunk, RERANKER_TITLE_KEYWORD_MIN_MATCH, RERANKER_TITLE_MATCH_BOOST
             )
+        if ENABLE_RERANKER_TITLE_EXACT_BOOST and query:
+            s += _title_exact_match_boost(query, chunk, RERANKER_TITLE_EXACT_MATCH_BOOST)
         if dominant_doc and (chunk.get("document_name") or "").strip() == dominant_doc:
             s += RERANKER_DOMINANT_DOC_BOOST
         if preferred and _chunk_matches_preferred_docs(chunk, preferred):
@@ -187,13 +217,13 @@ def rerank_chunks(
             c["_rerank_score"] = _add_boosts(c, _base_score(c))
     chunks_sorted = sorted(chunks, key=lambda c: -(c.get("_rerank_score") or 0))
     try:
-        from config import ENABLE_MMR_DIVERSITY, RERANKER_MMR_DIVERSITY_LAMBDA
-        if ENABLE_MMR_DIVERSITY and top_n is not None and len(chunks_sorted) > 1:
+        from config import ENABLE_MMR_DIVERSITY, ENABLE_MMR_DIVERSITY_SYNTHESIS, RERANKER_MMR_DIVERSITY_LAMBDA
+        use_mmr = ENABLE_MMR_DIVERSITY or (intent == "synthesis" and ENABLE_MMR_DIVERSITY_SYNTHESIS)
+        if use_mmr and top_n is not None and len(chunks_sorted) > 1:
             chunks_sorted = _apply_mmr_diversity(chunks_sorted, top_n, RERANKER_MMR_DIVERSITY_LAMBDA)
     except ImportError:
         pass
     if top_n is not None:
         chunks_sorted = chunks_sorted[:top_n]
-    for c in chunks_sorted:
-        c.pop("_rerank_score", None)
+    # Keep _rerank_score on chunks for similarity-gate bypass in simple_rag (caller pops after use)
     return chunks_sorted

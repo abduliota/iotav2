@@ -8,6 +8,7 @@ try:
     from config import (
         GROUNDING_SOFT_FAIL_THRESHOLD,
         GROUNDING_HARD_FAIL_THRESHOLD,
+        GROUNDING_HARD_FAIL_THRESHOLD_ARABIC,
         GROUNDING_PARTIAL_BAND,
         SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION,
         SEMANTIC_GROUNDING_THRESHOLD_METADATA,
@@ -17,8 +18,9 @@ try:
     )
 except ImportError:
     USE_SEMANTIC_GROUNDING = False
-    GROUNDING_SOFT_FAIL_THRESHOLD = 0.5
-    GROUNDING_HARD_FAIL_THRESHOLD = 0.35
+    GROUNDING_SOFT_FAIL_THRESHOLD = 0.45
+    GROUNDING_HARD_FAIL_THRESHOLD = 0.30
+    GROUNDING_HARD_FAIL_THRESHOLD_ARABIC = 0.28
     GROUNDING_PARTIAL_BAND = True
     SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION = 0.4
     SEMANTIC_GROUNDING_THRESHOLD_METADATA = 0.4
@@ -113,6 +115,8 @@ def grounding_decision(
     context_text: str,
     chunks: list[dict[str, Any]],
     intent: str,
+    *,
+    is_arabic_query: bool = False,
 ) -> tuple[str, float, str]:
     """
     Returns (decision, score, message) where:
@@ -126,9 +130,10 @@ def grounding_decision(
         threshold = get_grounding_threshold_for_intent(intent)
         overlap = token_overlap_ratio(answer, context_text)
         combined = 0.7 * score + 0.3 * overlap
+        hard_fail_threshold = GROUNDING_HARD_FAIL_THRESHOLD_ARABIC if is_arabic_query else GROUNDING_HARD_FAIL_THRESHOLD
         if combined >= GROUNDING_SOFT_FAIL_THRESHOLD:
             return ("pass", score, "")
-        if combined < GROUNDING_HARD_FAIL_THRESHOLD:
+        if combined < hard_fail_threshold:
             return ("hard_fail", score, "")
         if GROUNDING_PARTIAL_BAND:
             return ("soft_fail", score, " (Source: provided context).")

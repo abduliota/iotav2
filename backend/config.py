@@ -67,11 +67,13 @@ BACKTRACK_TOKENS = 50  # max tokens to backtrack for sentence boundary
 SHORT_PAGE_TOKEN_THRESHOLD = 300  # merge page with next if below this
 LONG_SECTION_TOKEN_THRESHOLD = 2000  # split by paragraphs first if above
 QWEN_MODEL = "Qwen/Qwen2-7B-Instruct"
+# For gated models and to avoid rate limits, set HF_TOKEN or HUGGING_FACE_HUB_TOKEN in env.
 
 # ---- Stage 3: Embeddings and Supabase ----
 # Embedding backend: "openai" (text-embedding-3-small) or "multilingual" (e5-multilingual / bge-m3)
 # Multilingual improves Arabic–English alignment; requires re-embedding all chunks when switched.
-USE_MULTILINGUAL_EMBEDDING = _env_bool("USE_MULTILINGUAL_EMBEDDING", False)
+# Set True for better Arabic–English alignment; re-embed corpus after enabling.
+USE_MULTILINGUAL_EMBEDDING = _env_bool("USE_MULTILINGUAL_EMBEDDING", True)
 MULTILINGUAL_EMBEDDING_MODEL = os.getenv("MULTILINGUAL_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
 # Dimension for multilingual-e5-small is 384; bge-m3 can be 1024
 MULTILINGUAL_EMBEDDING_DIMENSION = int(os.getenv("MULTILINGUAL_EMBEDDING_DIMENSION", "384"))
@@ -96,7 +98,12 @@ SIMILARITY_THRESHOLD_ARABIC = 0.45
 # When top_similarity >= this and model still returns "not found", use fallback/retry
 HIGH_CONFIDENCE_SIMILARITY = 0.65
 # Per-chunk filter: only pass chunks with cosine_similarity >= this to the LLM (avoids garbage in context)
-MIN_CHUNK_SIMILARITY = _env_float("MIN_CHUNK_SIMILARITY", 0.65)
+MIN_CHUNK_SIMILARITY = _env_float("MIN_CHUNK_SIMILARITY", 0.50)
+# Per-intent / Arabic: lower bar for synthesis and Arabic queries (retrieval recall)
+MIN_CHUNK_SIMILARITY_SYNTHESIS = _env_float("MIN_CHUNK_SIMILARITY_SYNTHESIS", 0.42)
+MIN_CHUNK_SIMILARITY_ARABIC = _env_float("MIN_CHUNK_SIMILARITY_ARABIC", 0.45)
+# If top chunk rerank score >= this, skip similarity gate (0 = disabled)
+RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD = _env_float("RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD", 0.0)
 
 # How many chunks to retrieve from Supabase per query
 # Set to 5 so the assistant returns at least 5 sources when available.
@@ -299,7 +306,12 @@ ENABLE_KEYWORD_DOCUMENT_BOOST = _env_bool("ENABLE_KEYWORD_DOCUMENT_BOOST", True)
 RERANKER_KEYWORD_DOCUMENT_BOOST = _env_float("RERANKER_KEYWORD_DOCUMENT_BOOST", 0.12)
 # MMR-style diversity: when selecting top_n, prefer chunks from different documents/sections
 ENABLE_MMR_DIVERSITY = _env_bool("ENABLE_MMR_DIVERSITY", False)
+# When True, apply MMR diversity for synthesis intent (multiple chunks/documents expected)
+ENABLE_MMR_DIVERSITY_SYNTHESIS = _env_bool("ENABLE_MMR_DIVERSITY_SYNTHESIS", True)
 RERANKER_MMR_DIVERSITY_LAMBDA = _env_float("RERANKER_MMR_DIVERSITY_LAMBDA", 0.7)
+# Title exact match: extra boost when query (normalized) equals or is contained in section_title or document name
+RERANKER_TITLE_EXACT_MATCH_BOOST = _env_float("RERANKER_TITLE_EXACT_MATCH_BOOST", 0.2)
+ENABLE_RERANKER_TITLE_EXACT_BOOST = _env_bool("ENABLE_RERANKER_TITLE_EXACT_BOOST", True)
 ENABLE_SELF_RAG = _env_bool("ENABLE_SELF_RAG", True)
 SELF_RAG_MAX_RETRIES = int(os.getenv("SELF_RAG_MAX_RETRIES", "1"))
 SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
@@ -310,7 +322,7 @@ SELF_RAG_CITATION_PHRASES = ["page", "according to", "source", "sama", "nora"]
 # ---- Simple RAG (single-file pipeline): all settings from env/config, no hardcoding in code ----
 SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "5"))
 # Larger k for synthesis/criteria questions to pull deeper sections
-SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "7"))
+SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "5"))
 # Use extractive answer builder (copy from chunk) for fact_definition/metadata instead of LLM generation
 ENABLE_EXTRACTIVE_BUILDER = _env_bool("ENABLE_EXTRACTIVE_BUILDER", True)
 SIMPLE_RAG_MAX_CONTENT_CHARS = int(os.getenv("SIMPLE_RAG_MAX_CONTENT_CHARS", "1800"))
@@ -462,8 +474,9 @@ SIMPLE_RAG_JURISDICTION_ANCHOR = os.getenv(
 )
 # Semantic grounding (answer vs chunk embeddings); when True, use as validator (reject/flag if score below threshold)
 USE_SEMANTIC_GROUNDING = _env_bool("USE_SEMANTIC_GROUNDING", True)
-GROUNDING_SOFT_FAIL_THRESHOLD = _env_float("GROUNDING_SOFT_FAIL_THRESHOLD", 0.5)
-GROUNDING_HARD_FAIL_THRESHOLD = _env_float("GROUNDING_HARD_FAIL_THRESHOLD", 0.35)
+GROUNDING_SOFT_FAIL_THRESHOLD = _env_float("GROUNDING_SOFT_FAIL_THRESHOLD", 0.45)
+GROUNDING_HARD_FAIL_THRESHOLD = _env_float("GROUNDING_HARD_FAIL_THRESHOLD", 0.30)
+GROUNDING_HARD_FAIL_THRESHOLD_ARABIC = _env_float("GROUNDING_HARD_FAIL_THRESHOLD_ARABIC", 0.28)
 GROUNDING_PARTIAL_BAND = _env_bool("GROUNDING_PARTIAL_BAND", True)
 SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION = _env_float("SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION", 0.4)
 SEMANTIC_GROUNDING_THRESHOLD_METADATA = _env_float("SEMANTIC_GROUNDING_THRESHOLD_METADATA", 0.4)

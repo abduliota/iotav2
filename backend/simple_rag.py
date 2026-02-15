@@ -50,6 +50,9 @@ from config import (
     SIMPLE_RAG_ECHO_PHRASES,
     SIMPLE_RAG_FILLER_PHRASES,
     MIN_CHUNK_SIMILARITY,
+    MIN_CHUNK_SIMILARITY_ARABIC,
+    MIN_CHUNK_SIMILARITY_SYNTHESIS,
+    RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD,
     SIMPLE_RAG_LOG_PATH,
     SIMPLE_RAG_MAX_CONTENT_CHARS,
     SIMPLE_RAG_MAX_NEW_TOKENS,
@@ -301,18 +304,24 @@ QUERY_INTENT_OTHER = "other"
 _METADATA_PATTERNS = [
     "law number",
     "decree number",
+    "decree no",
+    "law no",
     "what is the law number",
     "which decree",
     "royal decree",
     "version",
     "date",
+    "number of the law",
     "رقم القانون",
     "المرسوم",
     "مرسوم",
     "التاريخ",
+    "تاريخ",
 ]
 _FACT_DEFINITION_PATTERNS = [
     "what is ",
+    "what is the ",
+    "what is the law",
     "which decree",
     "which royal decree",
     "what law governs",
@@ -324,11 +333,15 @@ _FACT_DEFINITION_PATTERNS = [
     "what is the purpose",
     "ما هو ",
     "ما هي ",
+    "ما القانون",
     "أي مرسوم",
     "ما المرسوم",
     "غرض",
     "يهدف",
     "ما الغرض",
+    "تعريف",
+    "ما المقصود",
+    "ما المعنى",
 ]
 _PROCEDURAL_PATTERNS = [
     "how do i ",
@@ -349,6 +362,14 @@ _SYNTHESIS_PATTERNS = [
 ]
 
 
+_DEFINITION_LIKE_SECOND_PASS = (
+    "what is", "define", "what is the", "ما هو", "ما هي", "تعريف", "ما المقصود", "ما المعنى", "purpose of",
+)
+_METADATA_LIKE_SECOND_PASS = (
+    "law number", "decree number", "date", "رقم القانون", "المرسوم", "التاريخ", "decree no", "law no",
+)
+
+
 def _classify_query_intent(query: str) -> str:
     """Classify query as metadata, fact_definition, procedural, synthesis, or other. Deterministic (query-only; no randomness)."""
     if not query or not query.strip():
@@ -366,6 +387,13 @@ def _classify_query_intent(query: str) -> str:
     for p in _SYNTHESIS_PATTERNS:
         if p in q:
             return QUERY_INTENT_SYNTHESIS
+    # Second pass: short definition/metadata-like queries to reduce "other"
+    words = q.split()
+    if len(words) <= 10 or len(q) <= 80:
+        if any(x in q for x in _DEFINITION_LIKE_SECOND_PASS):
+            return QUERY_INTENT_FACT_DEFINITION
+        if any(x in q for x in _METADATA_LIKE_SECOND_PASS):
+            return QUERY_INTENT_METADATA
     return QUERY_INTENT_OTHER
 
 
@@ -820,27 +848,24 @@ _FACT_DEFINITION_MAX_LEN_NO_CITATION = 150
 def _ensure_citation_fallback(
     answer: str, not_found_message: str, intent: str = QUERY_INTENT_OTHER
 ) -> tuple[str, bool]:
-    """If no (Page X) or (Pages X–Y): substantive answers get (Source: provided context); short/non-substantive in strict mode -> not_found. For fact_definition intent, short answers are allowed without citation. Returns (answer, citation_fallback_applied)."""
-    applied = False
+    """If no (Page X) or (Pages X–Y): substantive answers get (Source: provided context); short/non-substantive in strict mode -> not_found. Returns (answer, citation_replaced_with_not_found). Only True when answer was replaced with not_found (for logging)."""
+    replaced_not_found = False
     if not answer or not answer.strip():
-        return answer, applied
+        return answer, replaced_not_found
     if answer.strip().lower() == not_found_message.lower():
-        return answer, applied
+        return answer, replaced_not_found
     if "(Page " in answer or "(Pages " in answer:
-        return answer, applied
+        return answer, replaced_not_found
     # Fact_definition/metadata: never replace with not_found for citation alone; always append (Source: provided context)
     if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
-        applied = True
-        return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
+        return answer.rstrip(".").rstrip() + " (Source: provided context).", replaced_not_found
     # No citation: soft fallback for substantive answers (synthesis without proper citation format)
     substantive = len(answer.strip()) >= _SUBSTANTIVE_ANSWER_MIN_LEN
     if substantive:
-        applied = True
-        return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
+        return answer.rstrip(".").rstrip() + " (Source: provided context).", replaced_not_found
     if SIMPLE_RAG_STRICT_CITATION:
         return not_found_message, True
-    applied = True
-    return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
+    return answer.rstrip(".").rstrip() + " (Source: provided context).", replaced_not_found
 
 
 def generate_answer_simple(
@@ -950,7 +975,7 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 log.debug("dual_retrieve (EN) failed, using single: %s", e)
     preferred_doc_names = get_documents_for_keywords(q)
     if ENABLE_RERANKING and chunks:
-        chunks = rerank_chunks(q, chunks, top_n=k, preferred_doc_names=preferred_doc_names)
+        chunks = rerank_chunks(q, chunks, top_n=k, preferred_doc_names=preferred_doc_names, intent=intent)
     if _is_arabic_query(q) and chunks:
         chunks = _reorder_arabic_first(chunks)
     log.debug("retrieval: %d chunks", len(chunks))
@@ -976,21 +1001,38 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             "sources": [],
         }
 
-    # Similarity gate: do not call generation if top retrieval similarity below threshold
+    # Effective threshold: lower for synthesis and Arabic (retrieval recall)
+    effective_threshold = MIN_CHUNK_SIMILARITY
+    if intent == QUERY_INTENT_SYNTHESIS:
+        effective_threshold = min(effective_threshold, MIN_CHUNK_SIMILARITY_SYNTHESIS)
+    if _is_arabic_query(q):
+        effective_threshold = min(effective_threshold, MIN_CHUNK_SIMILARITY_ARABIC)
+
     top_similarity = _top_retrieval_similarity(chunks)
-    if MIN_CHUNK_SIMILARITY > 0 and top_similarity < MIN_CHUNK_SIMILARITY:
-        log.info("similarity_gate: top similarity %.3f < MIN_CHUNK_SIMILARITY %.3f; returning not_found", top_similarity, MIN_CHUNK_SIMILARITY)
+    rerank_bypass = (
+        RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD > 0
+        and chunks
+        and (float(chunks[0].get("_rerank_score") or 0) >= RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD)
+    )
+    if not rerank_bypass and effective_threshold > 0 and top_similarity < effective_threshold:
+        top3 = [float(chunks[i].get("cosine_similarity") or chunks[i].get("similarity") or chunks[i].get("score") or 0) for i in range(min(3, len(chunks)))]
+        log.info(
+            "similarity_gate: top %.3f < threshold %.3f (intent=%s arabic=%s); top3=%s; returning not_found",
+            top_similarity, effective_threshold, intent, _is_arabic_query(q), top3[:3],
+        )
         return {
             "answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE,
             "sources": [{"document_name": c.get("document_name"), "page_start": c.get("page_start"), "page_end": c.get("page_end"), "snippet": (c.get("content") or "")[:280]} for c in chunks[:5]],
         }
 
-    # Optional: filter chunks by MIN_CHUNK_SIMILARITY before build_context
-    if MIN_CHUNK_SIMILARITY > 0:
-        chunks = [c for c in chunks if (float(c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0) >= MIN_CHUNK_SIMILARITY)]
+    if effective_threshold > 0:
+        chunks = [c for c in chunks if (float(c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0) >= effective_threshold)]
         if not chunks:
-            log.info("similarity_gate: no chunks above MIN_CHUNK_SIMILARITY; returning not_found")
+            log.info("similarity_gate: no chunks above effective threshold %.3f; returning not_found", effective_threshold)
             return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
+
+    for c in chunks:
+        c.pop("_rerank_score", None)
 
     context_text = build_context(chunks)
     if ENABLE_EXTRACTIVE_BUILDER and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
@@ -1032,9 +1074,9 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                     log.info("answer_language_check: Arabic query but answer not primarily Arabic; overriding to Arabic not_found")
                 answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
 
-    answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
-    if citation_applied:
-        log.info("citation_fallback_applied (no Page/Pages in answer)")
+    answer, citation_replaced_not_found = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
+    if citation_replaced_not_found:
+        log.info("citation_fallback_applied: answer replaced with not_found (no Page/Pages in answer)")
     if SIMPLE_RAG_MANDATORY_CITATION_STRICT and not _is_not_found_answer(answer):
         if "(Page " not in answer and "(Pages " not in answer:
             log.info("citation_validator: mandatory citation strict; no (Page X) present; overriding to not_found")
@@ -1085,7 +1127,7 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     _grounding_confidence: float = 1.0
     # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
     if USE_SEMANTIC_GROUNDING and not _is_not_found_answer(answer):
-        decision, sem_score, soft_msg = grounding_decision(answer, context_text, chunks, intent)
+        decision, sem_score, soft_msg = grounding_decision(answer, context_text, chunks, intent, is_arabic_query=_is_arabic_query(q))
         _grounding_confidence = sem_score
         if decision == "hard_fail":
             if has_citation_and_similarity or skip_not_found_if_high_retrieval:
@@ -1167,7 +1209,10 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 cited_idx.add(i)
         not_used = len(chunks) - len(cited_idx)
         if not_used > 0:
-            log.info("retrieved_but_not_used: %d of %d chunks not cited in answer", not_used, len(chunks))
+            if intent == QUERY_INTENT_SYNTHESIS:
+                log.debug("retrieved_but_not_used: %d of %d chunks not cited in answer (synthesis; multiple chunks expected)", not_used, len(chunks))
+            else:
+                log.info("retrieved_but_not_used: %d of %d chunks not cited in answer", not_used, len(chunks))
     snippet_limit = SNIPPET_CHAR_LIMIT
     sources = [
         {
