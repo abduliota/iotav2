@@ -50,6 +50,7 @@ ACRONYM_EXPANSIONS: dict[str, str] = {
     "bcbs": "basel committee on banking supervision",
     "cbb": "central bank",
     "sama": "saudi arabian monetary authority",
+    "nora": "national regulatory authority",
     "bcr": "banking control regulation",
     "rr": "regulation",
     "cir": "circular",

@@ -129,22 +129,22 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
 
   return (
     <div className="flex h-full">
-      <div className="flex flex-col flex-1 bg-background text-foreground transition-colors duration-200 rounded-none sm:rounded-2xl border border-border/60 overflow-hidden">
-        {/* Chat header - Regulation AI style */}
+      <div className="flex flex-col flex-1 bg-card text-foreground transition-colors duration-200 border border-border overflow-hidden cyber-chamfer-sm">
+        {/* Chat header - cyberpunk style */}
         <div className="flex items-center justify-between px-4 py-4 border-b border-border">
-          <div className="flex flex-col gap-0.5">
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <div className="flex flex-col gap-0.5 leading-tight">
+            <span className="text-label font-heading text-muted-foreground uppercase tracking-wider">
               Conversation
             </span>
-            <h2 className="text-xl font-semibold text-foreground md:text-2xl">
+            <h2 className="font-heading-h2 text-foreground">
               Assistant
             </h2>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground font-mono">
               Responses cite the retrieved passages.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+            <span className="rounded-sm border border-border bg-muted px-3 py-1 text-xs font-mono uppercase tracking-wider text-muted-foreground">
               {allMessages.length} messages
             </span>
             <Tabs value={activeTab} onValueChange={setActiveTab} className="hidden">
@@ -161,7 +161,7 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         <div className="flex-1 min-h-0">
           <ScrollArea className="h-full px-3 sm:px-4 lg:px-6 py-4">
             {allMessages.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center p-6">
+              <div className="flex min-h-[50vh] flex-1 items-center justify-center p-6 md:min-h-0">
                 <p className="text-center text-sm text-muted-foreground">
                   No messages yet. Ask your first question.
                 </p>

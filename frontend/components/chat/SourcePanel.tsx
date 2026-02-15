@@ -26,7 +26,7 @@ export function SourcePanel({ sources, isOpen, onClose }: SourcePanelProps) {
           <div key={source.id} className="p-3 bg-gray-800 rounded-lg border border-gray-700 transition-colors duration-200">
             <div className="font-semibold text-sm text-white">{source.source}</div>
             <div className="text-xs text-gray-400 mt-1">Page {source.page}</div>
-            <div className="text-xs text-gray-300 mt-2 line-clamp-3">{source.snippet}</div>
+            <div className="text-xs text-gray-300 mt-2 max-h-32 overflow-y-auto">{source.snippet}</div>
           </div>
         ))}
       </div>

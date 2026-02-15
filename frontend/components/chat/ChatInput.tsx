@@ -26,17 +26,22 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
   };
 
   return (
-    <div className="border-t border-gray-800 p-4 bg-[#0a0a0a] transition-colors duration-200">
-      <div className="flex gap-2">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder="Type your message... (Enter to send, Shift+Enter for newline)"
-          className="flex-1 px-4 py-2 border border-gray-700 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-800 bg-[#1a1a1a] text-white placeholder-gray-400 transition-all duration-200"
-          rows={1}
-        />
+    <div className="border-t border-border p-4 bg-card transition-colors duration-200">
+      <div className="flex gap-2 items-center">
+        <div className="flex-1 flex items-center gap-0 border border-border bg-[var(--input)] cyber-chamfer-sm focus-within:border-accent focus-within:shadow-neon-sm transition-all duration-150">
+          <span className="pl-3 text-accent font-mono select-none" aria-hidden="true">
+            &gt;
+          </span>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+            placeholder="Type your message... (Enter to send, Shift+Enter for newline)"
+            className="flex-1 min-w-0 pl-2 pr-4 py-2 bg-transparent border-0 resize-none focus:outline-none focus:ring-0 disabled:opacity-50 text-foreground placeholder:text-muted-foreground font-mono text-sm tracking-wide"
+            rows={1}
+          />
+        </div>
         <Button onClick={handleSubmit} disabled={disabled || !input.trim()}>
           Send
         </Button>

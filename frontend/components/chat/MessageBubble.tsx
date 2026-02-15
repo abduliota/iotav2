@@ -41,10 +41,10 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
       <div
-        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed transition-all duration-200 ${
+        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed transition-all duration-150 border border-border cyber-chamfer-sm px-3 py-2.5 ${
           isUser
-            ? 'bg-primary text-primary-foreground rounded-2xl rounded-br-sm px-3 py-2.5'
-            : 'bg-muted/70 text-foreground rounded-2xl rounded-bl-sm px-3 py-2.5'
+            ? 'bg-muted text-foreground border-accent/50'
+            : 'bg-card text-foreground'
         }`}
       >
         {isUser ? (
@@ -70,10 +70,10 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     type="button"
-                    className={`text-xs px-2 py-1 rounded-full border transition-colors ${
+                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${
                       !showSources
-                        ? 'bg-muted text-foreground border-border'
-                        : 'bg-background text-foreground border-border'
+                        ? 'bg-muted text-foreground border-accent'
+                        : 'bg-card text-muted-foreground border-border hover:border-accent/50'
                     }`}
                     onClick={() => setShowSources(false)}
                   >
@@ -81,10 +81,10 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                   </button>
                   <button
                     type="button"
-                    className={`text-xs px-2 py-1 rounded-full border transition-colors ${
+                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${
                       showSources
-                        ? 'bg-muted text-foreground border-border'
-                        : 'bg-background text-foreground border-border'
+                        ? 'bg-muted text-foreground border-accent'
+                        : 'bg-card text-muted-foreground border-border hover:border-accent/50'
                     }`}
                     onClick={() => setShowSources(true)}
                   >
@@ -93,7 +93,7 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                 </div>
                 {showSources && (
                   <div className="mt-3">
-                    <References references={message.references} />
+                    <References references={message.references} answerText={message.content} />
                   </div>
                 )}
               </>
@@ -127,7 +127,7 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={`text-[11px] h-7 px-2 ${feedbackSent === 1 ? 'text-green-600' : ''}`}
+                    className={`text-[11px] h-7 px-2 ${feedbackSent === 1 ? 'text-accent' : ''}`}
                     disabled={feedbackSubmitting || feedbackSent !== null}
                     onClick={async () => {
                       setFeedbackSubmitting(true);
@@ -158,7 +158,7 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={`text-[11px] h-7 px-2 ${feedbackSent === 0 ? 'text-red-600' : ''}`}
+                    className={`text-[11px] h-7 px-2 ${feedbackSent === 0 ? 'text-destructive' : ''}`}
                     disabled={feedbackSubmitting || feedbackSent !== null}
                     onClick={async () => {
                       setFeedbackSubmitting(true);

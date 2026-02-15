@@ -2,108 +2,181 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Dark, minimal scrollbar for prompt textarea */
-.custom-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.8) transparent;
+/* ========== Cyberpunk design tokens ========== */
+/* Light fallback (when .dark is toggled off) */
+:root {
+  --background: #f0f0f5;
+  --foreground: #1a1a24;
+  --card: #ffffff;
+  --card-foreground: #1a1a24;
+  --muted: #e8e8f0;
+  --muted-foreground: #6b7280;
+  --border: #d4d4e0;
+  --input: #ffffff;
+  --ring: #00aa66;
+  --primary: #1a1a24;
+  --primary-foreground: #ffffff;
+  --secondary: #cc00cc;
+  --secondary-foreground: #ffffff;
+  --accent: #00cc6a;
+  --accent-foreground: #0a0a0f;
+  --tertiary: #00a8cc;
+  --destructive: #dd2244;
+  --destructive-foreground: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a24;
+  --success: #00cc6a;
+  --sidebar-bg: #f5f5fa;
+  --sidebar-hover: #e8e8f0;
+  --sidebar-active: #e0e0ec;
+  --radius: 4px;
+  --radius-sm: 2px;
+  --box-shadow-neon-sm: 0 0 10px rgba(0, 204, 106, 0.3);
+  --box-shadow-neon: 0 0 20px rgba(0, 204, 106, 0.25);
+  --box-shadow-neon-lg: 0 0 30px rgba(0, 204, 106, 0.3);
+  --box-shadow-neon-secondary-sm: 0 0 10px rgba(204, 0, 204, 0.3);
+  --box-shadow-neon-secondary: 0 0 20px rgba(204, 0, 204, 0.25);
+  --box-shadow-neon-tertiary-sm: 0 0 10px rgba(0, 168, 204, 0.3);
+  --box-shadow-neon-tertiary: 0 0 20px rgba(0, 168, 204, 0.25);
+  --chamfer: 10px;
+  --chamfer-sm: 4px;
 }
 
+/* Cyberpunk dark (default - applied via class="dark" on html) */
+.dark {
+  --background: #0a0a0f;
+  --foreground: #e0e0e0;
+  --card: #12121a;
+  --card-foreground: #e0e0e0;
+  --muted: #1c1c2e;
+  --muted-foreground: #6b7280;
+  --border: #2a2a3a;
+  --input: #12121a;
+  --ring: #00ff88;
+  --primary: #e0e0e0;
+  --primary-foreground: #0a0a0f;
+  --secondary: #ff00ff;
+  --secondary-foreground: #0a0a0f;
+  --accent: #00ff88;
+  --accent-foreground: #0a0a0f;
+  --tertiary: #00d4ff;
+  --destructive: #ff3366;
+  --destructive-foreground: #ffffff;
+  --popover: #12121a;
+  --popover-foreground: #e0e0e0;
+  --success: #00ff88;
+  --sidebar-bg: #0d0d14;
+  --sidebar-hover: #1c1c2e;
+  --sidebar-active: #1c1c2e;
+  --box-shadow-neon-sm: 0 0 10px rgba(0, 255, 136, 0.4);
+  --box-shadow-neon: 0 0 20px rgba(0, 255, 136, 0.35), 0 0 40px rgba(0, 255, 136, 0.15);
+  --box-shadow-neon-lg: 0 0 30px rgba(0, 255, 136, 0.4), 0 0 60px rgba(0, 255, 136, 0.2);
+  --box-shadow-neon-secondary-sm: 0 0 10px rgba(255, 0, 255, 0.4);
+  --box-shadow-neon-secondary: 0 0 20px rgba(255, 0, 255, 0.35), 0 0 40px rgba(255, 0, 255, 0.15);
+  --box-shadow-neon-tertiary-sm: 0 0 10px rgba(0, 212, 255, 0.4);
+  --box-shadow-neon-tertiary: 0 0 20px rgba(0, 212, 255, 0.35);
+}
+
+/* Chamfer utilities */
+.cyber-chamfer {
+  clip-path: polygon(
+    0 var(--chamfer),
+    var(--chamfer) 0,
+    calc(100% - var(--chamfer)) 0,
+    100% var(--chamfer),
+    100% calc(100% - var(--chamfer)),
+    calc(100% - var(--chamfer)) 100%,
+    var(--chamfer) 100%,
+    0 calc(100% - var(--chamfer))
+  );
+}
+.cyber-chamfer-sm {
+  clip-path: polygon(
+    0 var(--chamfer-sm),
+    var(--chamfer-sm) 0,
+    calc(100% - var(--chamfer-sm)) 0,
+    100% var(--chamfer-sm),
+    100% calc(100% - var(--chamfer-sm)),
+    calc(100% - var(--chamfer-sm)) 100%,
+    var(--chamfer-sm) 100%,
+    0 calc(100% - var(--chamfer-sm))
+  );
+}
+
+/* Dark, minimal scrollbar - theme-aligned (accent/muted) */
+.custom-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
+}
 .custom-scroll::-webkit-scrollbar {
   width: 4px;
 }
-
 .custom-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-
 .custom-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(148, 163, 184, 0.8);
-  border-radius: 9999px;
+  background-color: var(--muted-foreground);
+  border-radius: 2px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--accent);
 }
 
 body {
   margin: 0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-mono), 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 1rem;
+  line-height: 1.625;
+  letter-spacing: 0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.2s ease, color 0.2s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-@layer base {
-  :root {
-    /* Regulation AI light mode - HSL for Tailwind */
-    --background: 210 20% 98%;
-    --surface: 0 0% 100%;
-    --border: 220 13% 91%;
-    --text-primary: 222 47% 11%;
-    --text-secondary: 220 9% 46%;
-    --accent: 243 75% 59%;
-    --success: 142 71% 45%;
-    --input-bg: 210 20% 98%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --primary: 222 47% 11%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --input: 220 13% 91%;
-    --ring: 243 75% 59%;
-    --radius: 0.75rem;
-    /* Sidebar - ChatGPT style */
-    --sidebar-bg: 220 14% 98%;
-    --sidebar-hover: 243 100% 97%;
-    --sidebar-active: 243 100% 94%;
-  }
-
-  .dark {
-    /* Regulation AI dark mode */
-    --background: 222 47% 7%;
-    --surface: 222 33% 11%;
-    --border: 215 28% 17%;
-    --text-primary: 220 13% 91%;
-    --text-secondary: 220 9% 65%;
-    --accent: 239 84% 67%;
-    --success: 142 71% 45%;
-    --input-bg: 222 47% 11%;
-    --foreground: 220 13% 91%;
-    --card: 222 33% 11%;
-    --card-foreground: 220 13% 91%;
-    --popover: 222 33% 11%;
-    --popover-foreground: 220 13% 91%;
-    --primary: 220 13% 91%;
-    --primary-foreground: 222 47% 7%;
-    --secondary: 215 28% 17%;
-    --secondary-foreground: 220 13% 91%;
-    --muted: 215 28% 17%;
-    --muted-foreground: 220 9% 65%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 100%;
-    --input: 215 28% 17%;
-    --ring: 239 84% 67%;
-    /* Sidebar dark */
-    --sidebar-bg: 222 47% 11%;
-    --sidebar-hover: 215 28% 17%;
-    --sidebar-active: 243 75% 25%;
-  }
+/* Heading scale - design system */
+h1, .font-heading-h1 {
+  font-family: var(--font-heading), Orbitron, 'Share Tech Mono', monospace;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+}
+h2, .font-heading-h2 {
+  font-family: var(--font-heading), Orbitron, 'Share Tech Mono', monospace;
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+h3, .font-heading-h3 {
+  font-family: var(--font-heading), Orbitron, 'Share Tech Mono', monospace;
+  font-size: 1rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+label, .text-label {
+  font-family: var(--font-mono), 'JetBrains Mono', Consolas, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+.chat-markdown code,
+.chat-markdown pre,
+prose code {
+  font-family: var(--font-mono), 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
 }
 
-/* Sidebar scroll - hidden until hover */
+/* Sidebar scroll - hidden until hover, accent/muted */
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 0.15s ease;
 }
 .sidebar-scroll:hover {
-  scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+  scrollbar-color: var(--muted-foreground) transparent;
 }
 .sidebar-scroll::-webkit-scrollbar {
   width: 6px;
@@ -113,10 +186,10 @@ body {
 }
 .sidebar-scroll::-webkit-scrollbar-thumb {
   background: transparent;
-  border-radius: 9999px;
+  border-radius: 2px;
 }
 .sidebar-scroll:hover::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.4);
+  background: var(--muted-foreground);
 }
 
 /* Chat markdown: ensure lists show bullets/numbers */
@@ -137,11 +210,113 @@ body {
   margin-bottom: 0.125rem;
 }
 
+/* Scanline overlay - full page, pointer-events none */
+.scanlines::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+}
+@media (prefers-reduced-motion: reduce) {
+  .scanlines::after {
+    opacity: 0.5;
+  }
+}
+
+/* Optional grid/circuit background - subtle accent grid */
+.cyber-grid {
+  background-image:
+    linear-gradient(rgba(0, 255, 136, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 136, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+@media (max-width: 767px) {
+  .cyber-grid {
+    background-size: 16px 16px;
+  }
+}
+
+/* Glitch effect - chromatic aberration; respect reduced motion */
+@keyframes glitch-rgb {
+  0% { transform: translate(0); filter: none; }
+  20% { transform: translate(-2px, 2px); filter: none; }
+  40% { transform: translate(2px, -2px); filter: none; }
+  60% { transform: translate(-2px, -2px); filter: none; }
+  80% { transform: translate(2px, 2px); filter: none; }
+  100% { transform: translate(0); filter: none; }
+}
+.cyber-glitch {
+  animation: glitch-rgb 0.3s steps(4) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cyber-glitch {
+    animation: none;
+  }
+}
+
+/* Hero headline glitch - chromatic aberration + subtle shift; disabled when reduced motion */
+@keyframes glitch-hero {
+  0%, 90%, 100% { transform: translate(0); }
+  92% { transform: translate(-1px, 1px); }
+  94% { transform: translate(1px, -1px); }
+  96% { transform: translate(-1px, -1px); }
+  98% { transform: translate(1px, 1px); }
+}
+.cyber-hero-glitch {
+  position: relative;
+  display: inline-block;
+  text-shadow:
+    1px 0 rgba(255, 0, 0, 0.4),
+    -1px 0 rgba(0, 255, 255, 0.4),
+    0 0 8px rgba(0, 255, 136, 0.2);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cyber-hero-glitch {
+    animation: glitch-hero 4s steps(1) infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cyber-hero-glitch {
+    animation: none;
+    text-shadow: 0 0 8px rgba(0, 255, 136, 0.15);
+  }
+}
+
+/* Blink cursor for terminal-style input */
+@keyframes blink-cursor {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.cyber-cursor-blink {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink-cursor 1s step-end infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cyber-cursor-blink {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 @layer base {
   * {
-    @apply border-border;
+    border-color: var(--border);
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--background);
+    color: var(--foreground);
   }
 }

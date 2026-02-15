@@ -99,24 +99,26 @@ export default function Home() {
     saveChat(updated);
   };
 
-  const latestRefs = currentChat?.messages
-    ? [...currentChat.messages].reverse().find((m) => m.role === 'assistant' && m.references?.length)?.references ?? null
+  const latestMessageWithRefs = currentChat?.messages
+    ? [...currentChat.messages].reverse().find((m) => m.role === 'assistant' && m.references?.length)
     : null;
+  const latestRefs = latestMessageWithRefs?.references ?? null;
+  const latestAnswerText = latestMessageWithRefs?.content ?? undefined;
 
   return (
-    <div className="flex h-screen bg-background text-foreground transition-colors duration-200">
+    <div className="flex h-screen bg-background text-foreground transition-colors duration-200 scanlines relative">
       {/* Desktop sidebar - ChatGPT style, 260px */}
       <aside className="hidden md:flex md:flex-col w-[260px] shrink-0 border-r border-border bg-sidebar-bg transition-[background-color] duration-200">
         <div className="flex items-center justify-between gap-2.5 px-3 py-3 border-b border-border">
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <img
               src="/logo.jpeg"
-              alt="IOTA Technologies"
+              alt="IOTA"
               className="h-[38px] w-[52px] shrink-0 rounded-lg"
               draggable={false}
             />
             <span className="truncate text-[15px] font-medium text-foreground">
-              IOTA Technologies
+              IOTA
             </span>
           </div>
           <ThemeToggle />
@@ -130,12 +132,12 @@ export default function Home() {
       {/* Main area */}
       <main className="flex-1 flex flex-col">
         {/* Mobile header: left menu+logo+name, right badge+toggle+new chat */}
-        <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 px-3 py-2 border-b border-border md:hidden bg-background/95 backdrop-blur-sm transition-colors duration-200">
+        <header className="flex flex-nowrap items-center justify-between gap-2 px-3 py-2 min-h-[44px] border-b border-border md:hidden bg-background/95 backdrop-blur-sm transition-colors duration-200">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <Button
               size="icon"
               variant="ghost"
-              className="h-11 w-11 min-h-[44px] min-w-[44px] shrink-0 rounded-full"
+              className="h-10 w-10 min-h-[44px] min-w-[44px] shrink-0 rounded-sm"
               aria-label="Open chat history"
               onClick={() => setIsSidebarOpen(true)}
             >
@@ -143,15 +145,15 @@ export default function Home() {
             </Button>
             <img
               src="/logo.jpeg"
-              alt="IOTA Technologies"
+              alt="IOTA"
               className="h-[38px] w-[52px] shrink-0 rounded-lg"
               draggable={false}
             />
             <span className="truncate text-[15px] font-medium text-foreground">
-              IOTA Technologies
+              IOTA
             </span>
           </div>
-          <div className="flex flex-wrap shrink-0 items-center justify-end gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-2 min-h-[44px]">
             <PromptCounter
               remaining={remainingPrompts}
               total={10}
@@ -161,6 +163,7 @@ export default function Home() {
               <Button
                 size="sm"
                 variant="outline"
+                className="h-10"
                 onClick={() => setShowAuthModal(true)}
               >
                 Sign Up / Login
@@ -169,6 +172,7 @@ export default function Home() {
               <Button
                 size="sm"
                 variant="outline"
+                className="h-10"
                 onClick={logout}
               >
                 Logout
@@ -178,7 +182,7 @@ export default function Home() {
             <Button
               size="icon"
               variant="outline"
-              className="h-11 w-11 min-h-[44px] min-w-[44px] rounded-full"
+              className="h-10 w-10 min-h-[44px] min-w-[44px] rounded-sm"
               aria-label="Start new chat"
               onClick={() => setSelectedChatId(null)}
             >
@@ -200,7 +204,7 @@ export default function Home() {
                 <span className="text-sm font-medium text-foreground">Chats</span>
                 <button
                   type="button"
-                  className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-accent"
+                  className="rounded-sm p-2 min-h-[44px] min-w-[44px] text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   onClick={() => setIsSidebarOpen(false)}
                   aria-label="Close sidebar"
                 >
@@ -219,7 +223,7 @@ export default function Home() {
         )}
 
         {/* Regulation AI dashboard: summary card + two-column chat/sources */}
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden cyber-grid">
           <div className="mx-auto w-full max-w-[1200px] flex flex-1 min-h-0 flex-col px-4 py-4 md:px-6 md:py-6">
             <SummaryCard
               rightSlot={
@@ -250,7 +254,7 @@ export default function Home() {
               }
             />
             <div className="mt-6 flex flex-1 min-h-0 gap-4 md:gap-6">
-              <div className="flex-1 min-h-0 min-w-0 flex flex-col rounded-xl border border-border bg-card shadow-sm">
+              <div className="flex-1 min-h-0 min-w-0 flex flex-col border border-border bg-card cyber-chamfer-sm overflow-hidden">
                 {currentChat ? (
                   <ChatInterface
                     key={currentChat.id}
@@ -275,7 +279,7 @@ export default function Home() {
                 )}
               </div>
               <div className="hidden md:flex md:flex-col w-72 shrink-0 min-h-0 lg:w-80">
-                <LatestSourcesPanel references={latestRefs} />
+                <LatestSourcesPanel references={latestRefs} answerText={latestAnswerText} />
               </div>
             </div>
           </div>

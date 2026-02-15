@@ -21,7 +21,7 @@ export function ThemeToggle() {
       onClick={toggle}
       aria-label="Toggle light/dark mode"
       aria-pressed={isDark ? 'true' : 'false'}
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-200 hover:bg-sidebar-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="flex h-10 w-10 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors duration-150 hover:bg-sidebar-hover hover:text-foreground hover:border-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       {isDark ? (
         <Sun className="h-4 w-4" aria-hidden />

@@ -9,19 +9,19 @@ interface SummaryCardProps {
 
 export function SummaryCard({ rightSlot }: SummaryCardProps) {
   return (
-    <div className="rounded-xl border border-border bg-card p-6 shadow-sm transition-colors duration-200">
+    <div className="border border-border bg-card p-4 md:p-6 cyber-chamfer transition-all duration-150 hover:border-accent/50 hover:shadow-neon-sm">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <p className="text-label uppercase tracking-wider text-muted-foreground font-heading">
             IOTA KSA
           </p>
-      <div className="mt-2 flex items-center gap-2">
-        <div className="h-8 w-1 rounded-full bg-accent" />
-        <h1 className="text-2xl font-semibold text-foreground">
-          Regulation AI
-        </h1>
-      </div>
-          <p className="mt-2 text-sm text-muted-foreground">
+          <div className="mt-2 flex items-center gap-2">
+            <div className="h-8 w-1 rounded-full bg-accent" />
+            <h1 className="font-heading-h1 text-foreground cyber-hero-glitch" id="hero-title">
+              Regulation AI
+            </h1>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground font-mono">
             AI answers with citations from SAMA rulebooks and schemes.
           </p>
         </div>
@@ -33,17 +33,8 @@ export function SummaryCard({ rightSlot }: SummaryCardProps) {
         </div>
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
-        <span className="rounded-full bg-green-500/10 px-3 py-1 text-xs font-medium text-green-600 dark:text-green-400">
+        <span className="rounded-sm border border-accent/50 bg-accent/10 px-3 py-1 text-xs font-mono font-medium text-accent">
           Live · API healthy
-        </span>
-        <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-          IOTA-Qwen7B
-        </span>
-        <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-          Multi-Agent Architecture
-        </span>
-        <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-          RAG
         </span>
       </div>
     </div>

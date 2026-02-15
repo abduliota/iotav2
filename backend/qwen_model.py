@@ -14,7 +14,7 @@ from typing import Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from config import ALLOW_BASED_ON_CONTEXT_PROMPT_LINE, APP_BRAND_NAME, QWEN_MODEL
+from config import ALLOW_BASED_ON_CONTEXT_PROMPT_LINE, APP_BRAND_NAME, QWEN_MODEL, RAG_MAX_INPUT_TOKENS
 
 # HF token for gated models (set HF_TOKEN or HUGGING_FACE_HUB_TOKEN)
 _HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
@@ -361,7 +361,7 @@ def generate_answer(context: str, user_query: str) -> str:
     )
 
     device = next(model.parameters()).device
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=RAG_MAX_INPUT_TOKENS)
     inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
 
     with torch.no_grad():

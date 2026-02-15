@@ -68,6 +68,8 @@ BACKTRACK_TOKENS = 50  # max tokens to backtrack for sentence boundary
 SHORT_PAGE_TOKEN_THRESHOLD = 300  # merge page with next if below this
 LONG_SECTION_TOKEN_THRESHOLD = 2000  # split by paragraphs first if above
 QWEN_MODEL = os.getenv("QWEN_MODEL", "Qwen/Qwen1.5-1.8B-Chat")
+# Max input tokens for RAG prompt (Qwen 1.5 supports 32k; higher = more history + context, more GPU memory)
+RAG_MAX_INPUT_TOKENS = int(os.getenv("RAG_MAX_INPUT_TOKENS", "16384"))
 # For gated models and to avoid rate limits, set HF_TOKEN or HUGGING_FACE_HUB_TOKEN in env.
 
 # ---- Stage 3: Embeddings and Supabase ----
@@ -186,7 +188,7 @@ KEYWORD_SEARCH_LIMIT = 5  # Max chunks from keyword search
 ENABLE_RERANKING = True
 
 # How many characters of content to expose as snippet to the frontend
-SNIPPET_CHAR_LIMIT = 300  # characters, not tokens
+SNIPPET_CHAR_LIMIT = 1500  # characters, not tokens
 
 # Brand name injected into generation system prompt
 APP_BRAND_NAME = "SAMA/NORA Compliance Assistant"
@@ -364,7 +366,7 @@ SIMPLE_RAG_NOT_FOUND_MESSAGE = os.getenv(
 )
 # Conversation history for session context: max exchanges to include, and per-message char truncation (0 = no truncation)
 CONVERSATION_HISTORY_MAX_MESSAGES = int(
-    os.getenv("CONVERSATION_HISTORY_MAX_MESSAGES", "20")
+    os.getenv("CONVERSATION_HISTORY_MAX_MESSAGES", "50")
 )
 CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE = int(
     os.getenv("CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE", "500")

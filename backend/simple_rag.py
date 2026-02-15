@@ -99,9 +99,10 @@ from config import (
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
     SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD,
     TOP_K_DEFINITION,
+    RAG_MAX_INPUT_TOKENS,
 )
 from embeddings import embed_chunk, embed_query
-from query_normalize import normalize_query_for_embedding
+from query_normalize import ACRONYM_EXPANSIONS, normalize_query_for_embedding
 from query_multilingual import merge_chunks_rrf, translate_arabic_to_english
 from grounding import grounding_decision
 from extractive_builder import build_extractive_answer
@@ -633,10 +634,16 @@ def _is_answer_mostly_english(text: str) -> bool:
 # Patterns for definition-style questions (what is X, define X, etc.); group 1 = term
 _DEFINITION_QUERY_PATTERNS = [
     re.compile(r"(?i)what\s+is\s+(.+?)\s*\??\s*$"),
+    re.compile(r"(?i)what\'?s\s+(.+?)\s*\??\s*$"),  # "whats" / "what's" same as "what is"
     re.compile(r"(?i)define\s+(.+?)\s*\??\s*$"),
     re.compile(r"(?i)what\s+does\s+(.+?)\s+mean\s*\??\s*$"),
     re.compile(r"(?i)meaning\s+of\s+(.+?)\s*\??\s*$"),
 ]
+# One-liner fallback for "what is SAMA?" / "what is NORA?" when context has no expansion
+DEFINITION_ACRONYM_FALLBACK: dict[str, str] = {
+    "sama": "SAMA refers to the Saudi Arabian Monetary Authority (Saudi Central Bank).",
+    "nora": "NORA refers to the National Regulatory Authority for Islamic banks in Saudi Arabia.",
+}
 _DEFINING_PHRASES = (" is ", " stands for ", " refers to ", " means ", " defined as ", " is defined as ")
 _PURPOSE_PHRASES = ("purpose of", "the purpose of this", "يهدف إلى", "الغرض من", "objectives of")
 
@@ -1040,14 +1047,17 @@ def generate_answer_simple(
                 u = (u[:max_chars] + "...") if len(u) > max_chars else u
                 a = (a[:max_chars] + "...") if len(a) > max_chars else a
             parts.append(f"User: {u}\nAssistant: {a}\n")
-        history_block = "### RECENT CONVERSATION\n\n" + "".join(parts) + "\n\n"
+        history_block = (
+            "The following are the last exchanges in this conversation; use them as context for the current question.\n\n"
+            "### RECENT CONVERSATION\n\n" + "".join(parts) + "\n\n"
+        )
         user_block = history_block + "### CONTEXT\n\n" + context_text + "\n\n### QUESTION\n" + question_for_prompt + "\n\nOutput only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
     else:
         user_block = user_template.format(context=context_text, question=question_for_prompt)
     prompt = f"{system_prompt}\n\n{user_block}\n"
 
     device = next(model.parameters()).device
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=RAG_MAX_INPUT_TOKENS)
     inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
     input_length = inputs["input_ids"].shape[1]
     gen_config = GenerationConfig(
@@ -1115,7 +1125,13 @@ def answer_query(
         k = TOP_K_DEFINITION
     else:
         k = SIMPLE_RAG_TOP_K
-    q_for_embed = normalize_query_for_embedding(q)
+    # For definition-style queries (e.g. "what is SAMA?"), expand acronym so retrieval finds definition chunks
+    is_def, term = _is_definition_style_query(q)
+    if is_def and term:
+        expansion = ACRONYM_EXPANSIONS.get(term.strip().lower())
+        q_for_embed = normalize_query_for_embedding(q + " " + expansion) if expansion else normalize_query_for_embedding(q)
+    else:
+        q_for_embed = normalize_query_for_embedding(q)
     try:
         query_embedding = embed_query(q_for_embed)
     except Exception as e:
@@ -1218,7 +1234,7 @@ def answer_query(
         )
         return {
             "answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE,
-            "sources": [{"document_name": c.get("document_name"), "page_start": c.get("page_start"), "page_end": c.get("page_end"), "snippet": (c.get("content") or "")[:280]} for c in chunks[:5]],
+            "sources": [{"document_name": c.get("document_name"), "page_start": c.get("page_start"), "page_end": c.get("page_end"), "snippet": (c.get("content") or "")[:SNIPPET_CHAR_LIMIT]} for c in chunks[:5]],
         }
 
     if effective_threshold > 0:
@@ -1371,6 +1387,24 @@ def answer_query(
             if filled:
                 answer = filled
                 log.info("definition_post_fill: replaced not_found with acronym definition for '%s'", term)
+
+    # Fallback: for "what is SAMA?" / "what is NORA?" use fixed one-liner when not_found or when answer is not a proper definition
+    if intent == QUERY_INTENT_FACT_DEFINITION:
+        is_def, term = _is_definition_style_query(q)
+        if is_def and term:
+            term_lower = re.sub(r"[?!.,;:]+$", "", term.strip().lower())  # "nora?" -> "nora"
+            if term_lower in DEFINITION_ACRONYM_FALLBACK:
+                use_fallback = _is_not_found_answer(answer)
+                if not use_fallback:
+                    # Replace wrong definition: answer doesn't contain the canonical expansion
+                    answer_lower = (answer or "").lower()
+                    if term_lower == "sama":
+                        use_fallback = "saudi arabian monetary authority" not in answer_lower and "saudi central bank" not in answer_lower
+                    elif term_lower == "nora":
+                        use_fallback = "national regulatory authority" not in answer_lower
+                if use_fallback:
+                    answer = DEFINITION_ACRONYM_FALLBACK[term_lower]
+                    log.info("definition_acronym_fallback: set answer for '%s'", term_lower)
 
     _grounding_confidence: float = 1.0
     # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
@@ -1589,11 +1623,13 @@ def _is_answer_grounded_in_context(answer: str, context: str, not_found_message:
 
 
 def _is_not_found_answer(answer: str) -> bool:
-    """True if answer is the standard not-found message (English or Arabic)."""
+    """True if answer is the standard not-found message (English or Arabic). Uses normalized comparison (strip, collapse spaces, lowercase) so small variations still match."""
     if not answer or not answer.strip():
         return False
-    a = answer.strip()
-    return a == SIMPLE_RAG_NOT_FOUND_MESSAGE or a == SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
+    a = " ".join(answer.strip().lower().split())
+    nf_en = " ".join((SIMPLE_RAG_NOT_FOUND_MESSAGE or "").strip().lower().split())
+    nf_ar = " ".join((SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC or "").strip().lower().split())
+    return a == nf_en or a == nf_ar
 
 
 def _is_answer_primarily_arabic(text: str, min_ratio: float = 0.3) -> bool:

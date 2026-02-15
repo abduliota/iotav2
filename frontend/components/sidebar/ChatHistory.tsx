@@ -30,7 +30,7 @@ export function ChatHistory({ selectedChatId, onSelectChat }: ChatHistoryProps) 
         <Button
           variant="outline"
           onClick={handleNewChat}
-          className="w-full justify-start gap-2 rounded-md border-border bg-transparent px-3 py-2.5 text-sm font-medium text-foreground transition-colors duration-150 hover:bg-sidebar-hover focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+          className="w-full justify-start gap-2 rounded-sm px-3 py-2.5"
           aria-label="New chat"
         >
           <Plus className="h-4 w-4 shrink-0" />
