@@ -38,6 +38,7 @@ from config import (
     SIMPLE_RAG_STOP_PHRASES,
     SIMPLE_RAG_STRICT_CITATION,
     SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT,
+    SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
     SIMPLE_RAG_TOP_K,
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
@@ -109,21 +110,22 @@ def _get_user_template() -> str:
 
 
 def _load_test_questions_json() -> dict[str, list[str]]:
-    """Load test questions from JSON (keys: sama, arabic, generic)."""
+    """Load test questions from JSON (keys: sama, arabic, generic, generic_off_topic)."""
     path = Path(SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH)
     if not path.is_absolute():
         path = BACKEND_DIR / path
     if not path.exists():
-        return {"sama": [], "arabic": [], "generic": []}
+        return {"sama": [], "arabic": [], "generic": [], "generic_off_topic": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return {
             "sama": list(data.get("sama") or []),
             "arabic": list(data.get("arabic") or []),
             "generic": list(data.get("generic") or []),
+            "generic_off_topic": list(data.get("generic_off_topic") or []),
         }
     except Exception:
-        return {"sama": [], "arabic": [], "generic": []}
+        return {"sama": [], "arabic": [], "generic": [], "generic_off_topic": []}
 
 
 def fetch_chunks(query_embedding: list[float], limit: int | None = None) -> list[dict[str, Any]]:
@@ -208,6 +210,84 @@ def _strip_filler_phrases(text: str) -> str:
             # Collapse double spaces
             out = " ".join(out.split())
     return out
+
+
+def _strip_trailing_not_found(answer: str) -> str:
+    """If answer contains not_found (English or Arabic) as a suffix or final sentence, strip it. Return either the substantive part or purely not_found."""
+    if not answer or not answer.strip():
+        return answer
+    a = answer.strip()
+    for not_found in (SIMPLE_RAG_NOT_FOUND_MESSAGE, SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC):
+        if not not_found:
+            continue
+        if a == not_found:
+            return a
+        # Exact suffix
+        if a.endswith(not_found):
+            rest = a[: -len(not_found)].strip().rstrip(".").strip()
+            return rest if rest else not_found
+        # not_found appears as final sentence (after newline or period)
+        idx = a.rfind(not_found)
+        if idx > 0 and a[idx:].strip() == not_found:
+            rest = a[:idx].strip().rstrip(".").strip()
+            return rest if rest else not_found
+    return answer
+
+
+# Intent classification for question-type-specific behavior
+QUERY_INTENT_FACT_DEFINITION = "fact_definition"
+QUERY_INTENT_PROCEDURAL = "procedural"
+QUERY_INTENT_SYNTHESIS = "synthesis"
+QUERY_INTENT_OTHER = "other"
+
+_FACT_DEFINITION_PATTERNS = [
+    "what is ",
+    "which decree",
+    "which royal decree",
+    "what law governs",
+    "what date",
+    "who governs",
+    "define ",
+    "definition of",
+    "ما هو ",
+    "ما هي ",
+    "أي مرسوم",
+    "ما المرسوم",
+]
+_PROCEDURAL_PATTERNS = [
+    "how do i ",
+    "how to ",
+    "steps to",
+    "process for",
+    "procedure",
+    "كيف أقدم",
+    "كيف يمكن",
+]
+_SYNTHESIS_PATTERNS = [
+    "criteria",
+    "requirements",
+    "list ",
+    "ما هي المتطلبات",
+    "minimum ",
+    "متطلبات",
+]
+
+
+def _classify_query_intent(query: str) -> str:
+    """Classify query as fact_definition, procedural, synthesis, or other."""
+    if not query or not query.strip():
+        return QUERY_INTENT_OTHER
+    q = query.strip().lower()
+    for p in _FACT_DEFINITION_PATTERNS:
+        if p in q:
+            return QUERY_INTENT_FACT_DEFINITION
+    for p in _PROCEDURAL_PATTERNS:
+        if p in q:
+            return QUERY_INTENT_PROCEDURAL
+    for p in _SYNTHESIS_PATTERNS:
+        if p in q:
+            return QUERY_INTENT_SYNTHESIS
+    return QUERY_INTENT_OTHER
 
 
 def _is_in_scope(query: str) -> bool:
@@ -361,10 +441,14 @@ def _extract_cited_sentences(answer: str) -> list[dict[str, str]]:
 
 # Minimum length to treat an answer as substantive when it has no (Page X); shorter -> replace with not_found
 _SUBSTANTIVE_ANSWER_MIN_LEN = 50
+# For fact/definition intent, allow short answers without (Page X) and append (Source: provided context)
+_FACT_DEFINITION_MAX_LEN_NO_CITATION = 150
 
 
-def _ensure_citation_fallback(answer: str, not_found_message: str) -> tuple[str, bool]:
-    """If no (Page X) or (Pages X–Y): substantive answers get (Source: provided context); short/non-substantive in strict mode -> not_found. Returns (answer, citation_fallback_applied)."""
+def _ensure_citation_fallback(
+    answer: str, not_found_message: str, intent: str = QUERY_INTENT_OTHER
+) -> tuple[str, bool]:
+    """If no (Page X) or (Pages X–Y): substantive answers get (Source: provided context); short/non-substantive in strict mode -> not_found. For fact_definition intent, short answers are allowed without citation. Returns (answer, citation_fallback_applied)."""
     applied = False
     if not answer or not answer.strip():
         return answer, applied
@@ -372,6 +456,10 @@ def _ensure_citation_fallback(answer: str, not_found_message: str) -> tuple[str,
         return answer, applied
     if "(Page " in answer or "(Pages " in answer:
         return answer, applied
+    # Fact/definition: short answer without citation -> keep and append (Source: provided context)
+    if intent == QUERY_INTENT_FACT_DEFINITION and len(answer.strip()) <= _FACT_DEFINITION_MAX_LEN_NO_CITATION:
+        applied = True
+        return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
     # No citation: soft fallback for substantive answers (synthesis without proper citation format)
     substantive = len(answer.strip()) >= _SUBSTANTIVE_ANSWER_MIN_LEN
     if substantive:
@@ -383,10 +471,14 @@ def _ensure_citation_fallback(answer: str, not_found_message: str) -> tuple[str,
     return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
 
 
-def generate_answer_simple(context_text: str, user_query: str) -> str:
+def generate_answer_simple(
+    context_text: str, user_query: str, intent: str = QUERY_INTENT_OTHER
+) -> str:
     """Use Qwen to turn context + question into a detailed, well-formed answer (DB-only)."""
     tokenizer, model = _load_qwen()
     system_prompt = _get_system_prompt()
+    if intent == QUERY_INTENT_FACT_DEFINITION and SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION
     user_template = _get_user_template()
     question_for_prompt = user_query
     if _is_arabic_query(user_query):
@@ -428,6 +520,7 @@ def generate_answer_simple(context_text: str, user_query: str) -> str:
     else:
         answer = decoded.strip()
     answer = _strip_filler_phrases(answer)
+    answer = _strip_trailing_not_found(answer)
     return answer
 
 
@@ -439,10 +532,11 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         return {"answer": "Please provide a question.", "sources": []}
 
     q = user_query.strip()
+    intent = _classify_query_intent(q)
     if category:
-        log.debug("query [%s]: %s", category, q)
+        log.debug("query [%s] intent=%s: %s", category, intent, q)
     else:
-        log.debug("query: %s", q)
+        log.debug("query intent=%s: %s", intent, q)
 
     if not _is_in_scope(q):
         log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
@@ -469,14 +563,14 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
 
     context_text = build_context(chunks)
     try:
-        answer = generate_answer_simple(context_text, q)
+        answer = generate_answer_simple(context_text, q, intent)
     except Exception as e:
         log.exception("generate_answer_simple failed: %s", e)
         raise
     raw_preview = (answer or "")[:300] + ("..." if len(answer or "") > 300 else "")
     log.debug("raw_answer (preview): %s", raw_preview)
 
-    answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE)
+    answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
 
@@ -526,6 +620,14 @@ _SNIPPET_DISPLAY_CHARS = 280
 
 # Minimum length of a contiguous answer segment that must appear in context for grounding check
 _GROUNDING_MIN_SEGMENT_LEN = 25
+# For short answers (e.g. decree + date), allow normalized overlap (punctuation/whitespace collapsed)
+_GROUNDING_SHORT_ANSWER_LEN = 80
+
+
+def _normalize_for_grounding(text: str) -> str:
+    """Collapse punctuation and whitespace for short-answer grounding comparison."""
+    t = re.sub(r"[\s,;:.\-–—]+", " ", text).strip().lower()
+    return " ".join(t.split())
 
 
 def _is_answer_grounded_in_context(answer: str, context: str, not_found_message: str) -> bool:
@@ -544,6 +646,10 @@ def _is_answer_grounded_in_context(answer: str, context: str, not_found_message:
     ctx_norm = re.sub(r"\s+", " ", context.strip()).lower()
     if len(body) < _GROUNDING_MIN_SEGMENT_LEN:
         return body in ctx_norm if body else True
+    # Short factual answers (e.g. decree + date): allow normalized overlap
+    if len(body) <= _GROUNDING_SHORT_ANSWER_LEN:
+        if _normalize_for_grounding(body) in _normalize_for_grounding(context):
+            return True
     for i in range(len(body) - _GROUNDING_MIN_SEGMENT_LEN + 1):
         segment = body[i : i + _GROUNDING_MIN_SEGMENT_LEN]
         if segment in ctx_norm:
@@ -579,30 +685,60 @@ def _print_sources(result: dict[str, Any]) -> None:
             print(f"      {display}")
 
 
+def format_response_for_display(user_query: str, result: dict[str, Any], snippet_chars: int = 200) -> str:
+    """Format result as: User's question, IOTA AI's Response, Source (numbered list)."""
+    answer = (result.get("answer") or "").strip()
+    sources = result.get("sources") or []
+    lines = [
+        "User's question : " + user_query,
+        "IOTA AI's Response : " + answer,
+        "Source :",
+    ]
+    if not sources:
+        lines.append("  (none)")
+    else:
+        for i, s in enumerate(sources, 1):
+            doc = s.get("document_name") or ""
+            start = s.get("page_start", 0)
+            end = s.get("page_end", 0)
+            snippet = (s.get("snippet") or "").strip()
+            if snippet and snippet_chars > 0:
+                disp = snippet[:snippet_chars] + ("..." if len(snippet) > snippet_chars else "")
+                lines.append(f"  {i} - {doc} (pages {start}-{end}): {disp}")
+            else:
+                lines.append(f"  {i} - {doc} (pages {start}-{end})")
+    return "\n".join(lines)
+
+
 def run_test_questions() -> None:
     """Load test questions from JSON and run answer_query for each; print and log results."""
     log = _get_logger()
     questions = _load_test_questions_json()
-    total = sum(len(q) for q in questions.values())
-    log.info("run_test_questions: %d questions (SAMA=%d, Arabic=%d, Generic=%d)", total, len(questions["sama"]), len(questions["arabic"]), len(questions["generic"]))
+    categories_order = ["sama", "arabic", "generic", "generic_off_topic"]
+    total = sum(len(questions.get(cat, [])) for cat in categories_order)
+    log.info(
+        "run_test_questions: %d questions (SAMA=%d, Arabic=%d, Generic=%d, Off-topic=%d)",
+        total,
+        len(questions.get("sama", [])),
+        len(questions.get("arabic", [])),
+        len(questions.get("generic", [])),
+        len(questions.get("generic_off_topic", [])),
+    )
     n = 0
-    for category, qlist in [("SAMA", questions["sama"]), ("Arabic", questions["arabic"]), ("Generic", questions["generic"])]:
+    for category_key in categories_order:
+        qlist = questions.get(category_key, [])
+        category_label = "Off-topic" if category_key == "generic_off_topic" else category_key.capitalize()
         for query in qlist:
             n += 1
-            print(f"\n[{n}/{total}] [{category}] {query}")
+            print(f"\n[{n}/{total}] [{category_label}] {query}")
             print("-" * 60)
-            log.debug("[%d/%d] [%s] %s", n, total, category, query)
+            log.debug("[%d/%d] [%s] %s", n, total, category_label, query)
             try:
-                result = answer_query(query, category=category)
+                result = answer_query(query, category=category_label)
             except Exception as e:
                 log.exception("answer_query failed: %s", e)
                 raise
-            print("Answer:", result["answer"])
-            if result.get("cited_sentences"):
-                print("Sentences used from sources:")
-                for i, cs in enumerate(result["cited_sentences"], 1):
-                    print(f"  {i}. {cs.get('text', '')} {cs.get('citation', '')}")
-            _print_sources(result)
+            print(format_response_for_display(query, result))
             log.debug("answer (preview): %s", (result["answer"] or "")[:200])
             log.debug("sources_count: %d", len(result["sources"]))
     log.info("run_test_questions done.")
@@ -618,14 +754,5 @@ if __name__ == "__main__":
             if len(sys.argv) > 1
             else "What are the minimum criteria for obtaining a banking license in Saudi Arabia?"
         )
-        print("Query:", query)
-        print("-" * 60)
         result = answer_query(query)
-        print("Answer:", result["answer"])
-        if result.get("cited_sentences"):
-            print("-" * 60)
-            print("Sentences used from sources:")
-            for i, cs in enumerate(result["cited_sentences"], 1):
-                print(f"  {i}. {cs.get('text', '')} {cs.get('citation', '')}")
-        print("-" * 60)
-        _print_sources(result)
+        print(format_response_for_display(query, result))

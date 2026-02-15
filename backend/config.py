@@ -282,7 +282,7 @@ SIMPLE_RAG_OFF_TOPIC_PATTERNS = [
     s.strip().lower()
     for s in os.getenv(
         "SIMPLE_RAG_OFF_TOPIC_PATTERNS",
-        "us president|who is the president|who's the president|weather|sports|football|recipe|movie",
+        "us president|who is the president|who's the president|weather|sports|football|recipe|movie|russia|where is|world cup|capital of france",
     ).split("|")
     if s.strip()
 ]
@@ -336,6 +336,11 @@ SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT = (
 SIMPLE_RAG_USER_TEMPLATE_DEFAULT = (
     "### CONTEXT\n\n{context}\n\n### QUESTION\n{question}\n\n"
     "Output only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
+)
+# Optional system line for fact/definition questions: extract exact phrase and cite (Page X); one sentence enough
+SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION = os.getenv(
+    "SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION",
+    "For questions asking for a single fact, decree name, law, or definition: extract the exact phrase from the context and cite (Page X). One sentence is enough. Do not add extra explanation.",
 )
 # Filler phrases to strip from model output (pipe-separated env so phrases can contain commas)
 SIMPLE_RAG_FILLER_PHRASES = [

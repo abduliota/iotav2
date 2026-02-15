@@ -11,5 +11,13 @@
   "generic": [
     "What is the capital requirement for opening a bank?",
     "How do I apply for a license?"
+  ],
+  "generic_off_topic": [
+    "Who is the US president?",
+    "Where is Russia?",
+    "What is the weather today?",
+    "How do I make pasta?",
+    "Who won the World Cup?",
+    "What is the capital of France?"
   ]
 }
