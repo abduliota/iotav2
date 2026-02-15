@@ -38,10 +38,14 @@ from config import (
     SIMPLE_RAG_STOP_PHRASES,
     SIMPLE_RAG_STRICT_CITATION,
     SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT,
+    SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX,
     SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION,
+    SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
     SIMPLE_RAG_TOP_K,
+    SIMPLE_RAG_TOP_K_SYNTHESIS,
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
+    TOP_K_DEFINITION,
 )
 from embeddings import embed_query
 from supabase_client import get_client
@@ -212,26 +216,39 @@ def _strip_filler_phrases(text: str) -> str:
     return out
 
 
+def _normalize_not_found_for_strip(text: str) -> str:
+    """Normalize for comparison: strip, collapse whitespace, lower case."""
+    if not text:
+        return ""
+    return " ".join(text.strip().lower().split())
+
+
 def _strip_trailing_not_found(answer: str) -> str:
-    """If answer contains not_found (English or Arabic) as a suffix or final sentence, strip it. Return either the substantive part or purely not_found."""
+    """Remove every occurrence of the exact or normalized not_found message. Return substantive remainder or canonical not_found."""
     if not answer or not answer.strip():
         return answer
     a = answer.strip()
-    for not_found in (SIMPLE_RAG_NOT_FOUND_MESSAGE, SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC):
+    canonical_messages = (SIMPLE_RAG_NOT_FOUND_MESSAGE, SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC)
+    for not_found in canonical_messages:
         if not not_found:
             continue
         if a == not_found:
             return a
-        # Exact suffix
-        if a.endswith(not_found):
-            rest = a[: -len(not_found)].strip().rstrip(".").strip()
-            return rest if rest else not_found
-        # not_found appears as final sentence (after newline or period)
-        idx = a.rfind(not_found)
-        if idx > 0 and a[idx:].strip() == not_found:
-            rest = a[:idx].strip().rstrip(".").strip()
-            return rest if rest else not_found
-    return answer
+    # Remove all occurrences of exact and normalized not_found from a
+    remainder = a
+    for not_found in canonical_messages:
+        if not not_found:
+            continue
+        norm_nf = _normalize_not_found_for_strip(not_found)
+        while not_found in remainder:
+            remainder = remainder.replace(not_found, " ").strip()
+        # Replace normalized form: build a pattern that matches the phrase with flexible whitespace
+        pattern = re.escape(norm_nf).replace(r"\ ", r"\s+")
+        remainder = re.sub(pattern, " ", remainder, flags=re.IGNORECASE)
+        remainder = " ".join(remainder.split()).strip()
+    if not remainder or not any(c.isalnum() for c in remainder):
+        return SIMPLE_RAG_NOT_FOUND_MESSAGE
+    return remainder
 
 
 # Intent classification for question-type-specific behavior
@@ -249,10 +266,15 @@ _FACT_DEFINITION_PATTERNS = [
     "who governs",
     "define ",
     "definition of",
+    "purpose of",
+    "what is the purpose",
     "ما هو ",
     "ما هي ",
     "أي مرسوم",
     "ما المرسوم",
+    "غرض",
+    "يهدف",
+    "ما الغرض",
 ]
 _PROCEDURAL_PATTERNS = [
     "how do i ",
@@ -337,6 +359,7 @@ _DEFINITION_QUERY_PATTERNS = [
     re.compile(r"(?i)meaning\s+of\s+(.+?)\s*\??\s*$"),
 ]
 _DEFINING_PHRASES = (" is ", " stands for ", " refers to ", " means ", " defined as ", " is defined as ")
+_PURPOSE_PHRASES = ("purpose of", "the purpose of this", "يهدف إلى", "الغرض من", "objectives of")
 
 
 def _is_definition_style_query(query: str) -> tuple[bool, str]:
@@ -356,7 +379,7 @@ def _is_definition_style_query(query: str) -> tuple[bool, str]:
 
 
 def _context_explicitly_defines_term(context: str, term: str) -> bool:
-    """True only if context contains the term and at least one defining phrase (e.g. 'is', 'stands for') in same or adjacent sentence."""
+    """True only if context contains the term and at least one defining phrase (e.g. 'is', 'stands for') or purpose phrase in same or adjacent sentence."""
     if not context or not term or not term.strip():
         return False
     term_lower = term.strip().lower()
@@ -369,6 +392,26 @@ def _context_explicitly_defines_term(context: str, term: str) -> bool:
         if term_lower not in seg_lower:
             continue
         if any(phrase in seg_lower for phrase in _DEFINING_PHRASES):
+            return True
+        if any(phrase in seg_lower for phrase in _PURPOSE_PHRASES):
+            return True
+    return False
+
+
+def _context_contains_purpose_for_term(context: str, term: str) -> bool:
+    """True if context has a segment containing a purpose phrase and the term (or law name). Used for 'purpose of [Law]' questions."""
+    if not context or not term or not term.strip():
+        return False
+    term_lower = term.strip().lower()
+    context_lower = context.lower()
+    if term_lower not in context_lower:
+        return False
+    segments = re.split(r"[.!?\n]+", context)
+    for seg in segments:
+        seg_lower = seg.lower()
+        if term_lower not in seg_lower:
+            continue
+        if any(phrase in seg_lower for phrase in _PURPOSE_PHRASES):
             return True
     return False
 
@@ -479,6 +522,10 @@ def generate_answer_simple(
     system_prompt = _get_system_prompt()
     if intent == QUERY_INTENT_FACT_DEFINITION and SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION
+    if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS
+    if _is_arabic_query(user_query) and SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX
     user_template = _get_user_template()
     question_for_prompt = user_query
     if _is_arabic_query(user_query):
@@ -542,7 +589,14 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
         return {"answer": SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE, "sources": []}
 
-    k = top_k if top_k is not None else SIMPLE_RAG_TOP_K
+    if top_k is not None:
+        k = top_k
+    elif intent == QUERY_INTENT_SYNTHESIS:
+        k = SIMPLE_RAG_TOP_K_SYNTHESIS
+    elif intent == QUERY_INTENT_FACT_DEFINITION:
+        k = TOP_K_DEFINITION
+    else:
+        k = SIMPLE_RAG_TOP_K
     try:
         query_embedding = embed_query(q)
     except Exception as e:
@@ -574,10 +628,12 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
 
-    # Definition guard: for "what is X?" / "define X?" if context does not explicitly define X, force not found
+    # Definition guard: for "what is X?" / "define X?" / "purpose of X?" if context does not explicitly define or state purpose, force not found
     is_def, term = _is_definition_style_query(q)
     if is_def and term and not _is_not_found_answer(answer):
-        if not _context_explicitly_defines_term(context_text, term):
+        if not _context_explicitly_defines_term(context_text, term) and not _context_contains_purpose_for_term(
+            context_text, term
+        ):
             log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
             answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
 
@@ -586,6 +642,14 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE
     ):
         log.info("grounding_check: answer not supported by context; overriding to not_found")
+        answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+    # For synthesis intent, additionally require at least one verbatim or near-verbatim sentence from context
+    if (
+        intent == QUERY_INTENT_SYNTHESIS
+        and not _is_not_found_answer(answer)
+        and not _answer_has_verbatim_support(answer, context_text)
+    ):
+        log.info("grounding_check: synthesis answer has no verbatim support in context; overriding to not_found")
         answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
 
     # Confabulation: blocklist terms in answer but not in context — remove offending sentences; replace whole answer only if nothing left
@@ -628,6 +692,34 @@ def _normalize_for_grounding(text: str) -> str:
     """Collapse punctuation and whitespace for short-answer grounding comparison."""
     t = re.sub(r"[\s,;:.\-–—]+", " ", text).strip().lower()
     return " ".join(t.split())
+
+
+_VERBATIM_SUPPORT_MIN_SEGMENT = 30
+_VERBATIM_SUPPORT_MIN_SUBSTRING = 40
+
+
+def _answer_has_verbatim_support(answer: str, context: str) -> bool:
+    """True if at least one sentence or long substring of the answer appears in context (after normalizing whitespace)."""
+    if not answer or not context:
+        return False
+    body = re.sub(r"\(Page\s+\d+\)|\(Pages\s+\d+\s*[–\-]\s*\d+\)", "", answer, flags=re.IGNORECASE)
+    body = re.sub(r"\(Source:\s*provided context\.?\)", "", body, flags=re.IGNORECASE)
+    body = body.strip()
+    ctx_norm = re.sub(r"\s+", " ", context.strip()).lower()
+    segments = re.split(r"[.!?\n]+", body)
+    for seg in segments:
+        seg = seg.strip()
+        if len(seg) < _VERBATIM_SUPPORT_MIN_SEGMENT:
+            continue
+        seg_norm = re.sub(r"\s+", " ", seg).strip().lower()
+        if seg_norm and seg_norm in ctx_norm:
+            return True
+        if len(seg_norm) >= _VERBATIM_SUPPORT_MIN_SUBSTRING:
+            for i in range(len(seg_norm) - _VERBATIM_SUPPORT_MIN_SUBSTRING + 1):
+                sub = seg_norm[i : i + _VERBATIM_SUPPORT_MIN_SUBSTRING]
+                if sub in ctx_norm:
+                    return True
+    return False
 
 
 def _is_answer_grounded_in_context(answer: str, context: str, not_found_message: str) -> bool:

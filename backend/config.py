@@ -82,7 +82,7 @@ CHUNK_BATCH_SIZE = 200  # 100-300 recommended
 # Similarity threshold for accepting retrieval (cosine similarity in [0, 1]).
 # Lowered for experimentation on dense regulatory text; tune back up after measuring.
 SIMILARITY_THRESHOLD = 0.5
-# Slightly lower threshold for Arabic queries (often lower embedding similarity)
+# Slightly lower threshold for Arabic queries (often lower embedding similarity). For future use when match_chunks RPC supports min_similarity.
 SIMILARITY_THRESHOLD_ARABIC = 0.45
 # When top_similarity >= this and model still returns "not found", use fallback/retry
 HIGH_CONFIDENCE_SIMILARITY = 0.65
@@ -247,6 +247,8 @@ SELF_RAG_CITATION_PHRASES = ["page", "according to", "source", "sama", "nora"]
 
 # ---- Simple RAG (single-file pipeline): all settings from env/config, no hardcoding in code ----
 SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "8"))
+# Larger k for synthesis/criteria questions to pull deeper sections
+SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "14"))
 SIMPLE_RAG_MAX_CONTENT_CHARS = int(os.getenv("SIMPLE_RAG_MAX_CONTENT_CHARS", "1800"))
 SIMPLE_RAG_MAX_NEW_TOKENS = int(os.getenv("SIMPLE_RAG_MAX_NEW_TOKENS", "500"))
 SIMPLE_RAG_NOT_FOUND_MESSAGE = os.getenv(
@@ -290,12 +292,12 @@ SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC = os.getenv(
     "SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC",
     "لم يتم العثور على المعلومات في وثائق ساما/نورا.",
 )
-# Terms that indicate confabulation if present in answer but not in context (comma-separated env or default)
+# Terms that indicate confabulation if present in answer but not in context (comma-separated env or default; override via SIMPLE_RAG_CONFABULATION_BLOCKLIST)
 SIMPLE_RAG_CONFABULATION_BLOCKLIST = [
     s.strip().lower()
     for s in os.getenv(
         "SIMPLE_RAG_CONFABULATION_BLOCKLIST",
-        "Kuwait,Dubai,ECRIS,IMF,Mint,YNAB,MEED,FMA,tourist visa",
+        "Kuwait,Dubai,ECRIS,IMF,Mint,YNAB,MEED,FMA,tourist visa,fit and proper,capital adequacy ratio",
     ).split(",")
     if s.strip()
 ]
@@ -341,6 +343,16 @@ SIMPLE_RAG_USER_TEMPLATE_DEFAULT = (
 SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION",
     "For questions asking for a single fact, decree name, law, or definition: extract the exact phrase from the context and cite (Page X). One sentence is enough. Do not add extra explanation.",
+)
+# Optional system line for criteria/requirements questions: require at least one direct quote
+SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS = os.getenv(
+    "SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS",
+    "For criteria or requirements questions, at least one sentence in your answer must be a direct quote or near-verbatim restatement from the context, followed by (Page X).",
+)
+# Arabic queries: reinforce no translation beyond context (env-overridable)
+SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX = os.getenv(
+    "SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX",
+    "Answer only in Arabic. Use only the exact information from the context; do not add or translate information that is not in the context. If the context does not contain the answer, respond exactly: لم يتم العثور على المعلومات في وثائق ساما/نورا.",
 )
 # Filler phrases to strip from model output (pipe-separated env so phrases can contain commas)
 SIMPLE_RAG_FILLER_PHRASES = [
