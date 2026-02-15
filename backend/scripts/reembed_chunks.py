@@ -45,6 +45,7 @@ def main() -> None:
                     continue
                 client.table("sama_nora_chunks").update({"embedding": embedding}).eq("id", chunk_id).execute()
                 updated += 1
+                print(f"Updated id={chunk_id} ({updated}/{total})")
             except Exception as e:
                 print(f"Error id={chunk_id}: {e}")
         print(f"Progress: {min(i + CHUNK_BATCH_SIZE, total)}/{total} processed, {updated} updated.")
