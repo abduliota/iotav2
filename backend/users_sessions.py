@@ -75,17 +75,34 @@ def get_session_message_history(
     return rows
 
 
+def get_message_by_id(message_id: str) -> dict[str, Any] | None:
+    """Fetch user_message and assistant_message from session_messages by message_id. Returns None if not found."""
+    client = get_client()
+    result = (
+        client.table("session_messages")
+        .select("user_message, assistant_message")
+        .eq("message_id", message_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data or len(result.data) == 0:
+        return None
+    return result.data[0]
+
+
 def upsert_session_feedback(
     session_id: str,
     user_id: str,
     message_id: str,
     feedback: int,
     comments: str | None = None,
+    user_message: str | None = None,
+    assistant_message: str | None = None,
     timestamp: datetime | None = None,
 ) -> None:
-    """Insert or update feedback for a message. feedback must be 0 or 1."""
-    if feedback not in (0, 1):
-        raise ValueError("feedback must be 0 or 1")
+    """Insert or update feedback for a message. feedback must be 1-5 (stars)."""
+    if not (1 <= feedback <= 5):
+        raise ValueError("feedback must be 1 to 5")
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
     client = get_client()
@@ -98,6 +115,10 @@ def upsert_session_feedback(
     }
     if comments is not None:
         data["comments"] = comments
+    if user_message is not None:
+        data["user_message"] = user_message
+    if assistant_message is not None:
+        data["assistant_message"] = assistant_message
     client.table("session_feedback").upsert(
         data,
         on_conflict="session_id,message_id",

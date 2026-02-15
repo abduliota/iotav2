@@ -25,6 +25,7 @@ from simple_rag import answer_query
 from users_sessions import (
     create_user,
     create_session,
+    get_message_by_id,
     insert_session_message,
     upsert_session_feedback,
 )
@@ -55,7 +56,7 @@ class FeedbackBody(BaseModel):
     session_id: str
     user_id: str
     message_id: str
-    feedback: int = Field(..., ge=0, le=1)
+    feedback: int = Field(..., ge=1, le=5)
     comments: str | None = None
 
 
@@ -130,14 +131,19 @@ def api_query(body: QueryBody):
 
 @app.post("/api/feedback")
 def api_feedback(body: FeedbackBody):
-    """Record feedback (0 or 1) and optional comments for a message."""
+    """Record star rating (1-5) and optional comments for a message. Fills user_message/assistant_message from session_messages."""
     try:
+        msg = get_message_by_id(body.message_id)
+        user_message = (msg.get("user_message") or "") if msg else ""
+        assistant_message = (msg.get("assistant_message") or "") if msg else ""
         upsert_session_feedback(
             session_id=body.session_id,
             user_id=body.user_id,
             message_id=body.message_id,
             feedback=body.feedback,
             comments=body.comments,
+            user_message=user_message or None,
+            assistant_message=assistant_message or None,
         )
         return {"ok": True}
     except ValueError as e:

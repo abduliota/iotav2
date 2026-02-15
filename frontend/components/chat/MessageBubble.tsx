@@ -7,7 +7,7 @@ import { Message } from '@/lib/types';
 import { normalizeMarkdownLists } from '@/lib/utils';
 import { References } from './References';
 import { Button } from '@/components/ui/button';
-import { Download, Copy, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Download, Copy, Star } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: Message;
@@ -18,7 +18,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [showSources, setShowSources] = useState(false);
-  const [feedbackSent, setFeedbackSent] = useState<0 | 1 | null>(null);
+  const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
 
@@ -122,72 +122,51 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
                 Copy
               </Button>
               {canSendFeedback && (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="text-[11px] mr-1">Helpful?</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`text-[11px] h-7 px-2 ${feedbackSent === 1 ? 'text-accent' : ''}`}
-                    disabled={feedbackSubmitting || feedbackSent !== null}
-                    onClick={async () => {
-                      setFeedbackSubmitting(true);
-                      try {
-                        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-                        await fetch(`${API_URL}/api/feedback`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            session_id: sessionId,
-                            user_id: userId,
-                            message_id: message.messageId,
-                            feedback: 1,
-                            comments: undefined,
-                          }),
-                        });
-                        setFeedbackSent(1);
-                      } catch (e) {
-                        console.error('Feedback failed:', e);
-                      } finally {
-                        setFeedbackSubmitting(false);
-                      }
-                    }}
-                  >
-                    <ThumbsUp className="h-3 w-3 mr-1" />
-                    Yes
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`text-[11px] h-7 px-2 ${feedbackSent === 0 ? 'text-destructive' : ''}`}
-                    disabled={feedbackSubmitting || feedbackSent !== null}
-                    onClick={async () => {
-                      setFeedbackSubmitting(true);
-                      try {
-                        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-                        await fetch(`${API_URL}/api/feedback`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            session_id: sessionId,
-                            user_id: userId,
-                            message_id: message.messageId,
-                            feedback: 0,
-                            comments: undefined,
-                          }),
-                        });
-                        setFeedbackSent(0);
-                      } catch (e) {
-                        console.error('Feedback failed:', e);
-                      } finally {
-                        setFeedbackSubmitting(false);
-                      }
-                    }}
-                  >
-                    <ThumbsDown className="h-3 w-3 mr-1" />
-                    No
-                  </Button>
+                <span className="flex items-center gap-1 text-muted-foreground" role="group" aria-label="Rate this response 1 to 5 stars">
+                  <span className="text-[11px] mr-1">Rate:</span>
+                  {[1, 2, 3, 4, 5].map((rating) => (
+                    <button
+                      key={rating}
+                      type="button"
+                      disabled={feedbackSubmitting || feedbackSent !== null}
+                      onClick={async () => {
+                        setFeedbackSubmitting(true);
+                        try {
+                          const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+                          await fetch(`${API_URL}/api/feedback`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              session_id: sessionId,
+                              user_id: userId,
+                              message_id: message.messageId,
+                              feedback: rating,
+                            }),
+                          });
+                          setFeedbackSent(rating);
+                        } catch (e) {
+                          console.error('Feedback failed:', e);
+                        } finally {
+                          setFeedbackSubmitting(false);
+                        }
+                      }}
+                      className="p-0.5 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none"
+                      aria-label={`${rating} star${rating === 1 ? '' : 's'}`}
+                      aria-pressed={feedbackSent !== null && feedbackSent >= rating ? 'true' : 'false'}
+                    >
+                      <Star
+                        className={`h-4 w-4 ${
+                          feedbackSent !== null
+                            ? rating <= feedbackSent
+                              ? 'fill-accent text-accent'
+                              : 'text-muted-foreground'
+                            : 'text-muted-foreground hover:text-accent'
+                        }`}
+                      />
+                    </button>
+                  ))}
                   {feedbackSent !== null && (
-                    <span className="text-[11px] text-muted-foreground">Thanks</span>
+                    <span className="text-[11px] text-muted-foreground ml-0.5">Thanks</span>
                   )}
                 </span>
               )}
