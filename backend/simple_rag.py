@@ -40,6 +40,7 @@ from config import (
     SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT,
     SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX,
     SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION,
+    SIMPLE_RAG_SYSTEM_PROMPT_METADATA,
     SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
     SIMPLE_RAG_TOP_K,
@@ -251,12 +252,26 @@ def _strip_trailing_not_found(answer: str) -> str:
     return remainder
 
 
-# Intent classification for question-type-specific behavior
+# Intent classification for question-type-specific behavior (deterministic: same query -> same intent)
 QUERY_INTENT_FACT_DEFINITION = "fact_definition"
+QUERY_INTENT_METADATA = "metadata"
 QUERY_INTENT_PROCEDURAL = "procedural"
 QUERY_INTENT_SYNTHESIS = "synthesis"
 QUERY_INTENT_OTHER = "other"
 
+_METADATA_PATTERNS = [
+    "law number",
+    "decree number",
+    "what is the law number",
+    "which decree",
+    "royal decree",
+    "version",
+    "date",
+    "رقم القانون",
+    "المرسوم",
+    "مرسوم",
+    "التاريخ",
+]
 _FACT_DEFINITION_PATTERNS = [
     "what is ",
     "which decree",
@@ -296,10 +311,13 @@ _SYNTHESIS_PATTERNS = [
 
 
 def _classify_query_intent(query: str) -> str:
-    """Classify query as fact_definition, procedural, synthesis, or other."""
+    """Classify query as metadata, fact_definition, procedural, synthesis, or other. Deterministic (query-only; no randomness)."""
     if not query or not query.strip():
         return QUERY_INTENT_OTHER
     q = query.strip().lower()
+    for p in _METADATA_PATTERNS:
+        if p in q:
+            return QUERY_INTENT_METADATA
     for p in _FACT_DEFINITION_PATTERNS:
         if p in q:
             return QUERY_INTENT_FACT_DEFINITION
@@ -416,6 +434,38 @@ def _context_contains_purpose_for_term(context: str, term: str) -> bool:
     return False
 
 
+_HEADER_METADATA_PHRASES = (
+    "royal decree",
+    "decree no",
+    "law no",
+    "law no.",
+    "number m/",
+    "date:",
+    "نسخة",
+    "مرسوم",
+    "قانون رقم",
+    "التاريخ",
+)
+
+
+def _context_contains_header_or_metadata(context: str, term: str) -> bool:
+    """True if context has a segment containing the term and header-style metadata (law/decree number, date)."""
+    if not context or not term or not term.strip():
+        return False
+    term_lower = term.strip().lower()
+    context_lower = context.lower()
+    if term_lower not in context_lower:
+        return False
+    segments = re.split(r"[.!?\n]+", context)
+    for seg in segments:
+        seg_lower = seg.lower()
+        if term_lower not in seg_lower:
+            continue
+        if any(phrase in seg_lower for phrase in _HEADER_METADATA_PHRASES):
+            return True
+    return False
+
+
 def _get_blocklisted_confabulation_terms(answer: str, context: str) -> list[str]:
     """Return list of blocklist terms that appear in answer but not in context."""
     if not answer or not context:
@@ -499,8 +549,8 @@ def _ensure_citation_fallback(
         return answer, applied
     if "(Page " in answer or "(Pages " in answer:
         return answer, applied
-    # Fact/definition: short answer without citation -> keep and append (Source: provided context)
-    if intent == QUERY_INTENT_FACT_DEFINITION and len(answer.strip()) <= _FACT_DEFINITION_MAX_LEN_NO_CITATION:
+    # Fact_definition/metadata: never replace with not_found for citation alone; always append (Source: provided context)
+    if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
         applied = True
         return answer.rstrip(".").rstrip() + " (Source: provided context).", applied
     # No citation: soft fallback for substantive answers (synthesis without proper citation format)
@@ -522,6 +572,8 @@ def generate_answer_simple(
     system_prompt = _get_system_prompt()
     if intent == QUERY_INTENT_FACT_DEFINITION and SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION
+    if intent == QUERY_INTENT_METADATA and SIMPLE_RAG_SYSTEM_PROMPT_METADATA:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_METADATA
     if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS
     if _is_arabic_query(user_query) and SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX:
@@ -580,12 +632,14 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
 
     q = user_query.strip()
     intent = _classify_query_intent(q)
+    in_scope = _is_in_scope(q)
+    log.info("intent=%s in_scope=%s query=%s", intent, in_scope, q[:200] if q else "")
     if category:
         log.debug("query [%s] intent=%s: %s", category, intent, q)
     else:
         log.debug("query intent=%s: %s", intent, q)
 
-    if not _is_in_scope(q):
+    if not in_scope:
         log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
         return {"answer": SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE, "sources": []}
 
@@ -628,29 +682,36 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
 
-    # Definition guard: for "what is X?" / "define X?" / "purpose of X?" if context does not explicitly define or state purpose, force not found
-    is_def, term = _is_definition_style_query(q)
-    if is_def and term and not _is_not_found_answer(answer):
-        if not _context_explicitly_defines_term(context_text, term) and not _context_contains_purpose_for_term(
-            context_text, term
-        ):
-            log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
-            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
+    # Definition guard: for "what is X?" / "define X?" / "purpose of X?" if context does not explicitly define or state purpose, force not found. Skip for metadata intent.
+    if intent != QUERY_INTENT_METADATA:
+        is_def, term = _is_definition_style_query(q)
+        if is_def and term and not _is_not_found_answer(answer):
+            if not _context_explicitly_defines_term(context_text, term) and not _context_contains_purpose_for_term(
+                context_text, term
+            ) and not _context_contains_header_or_metadata(context_text, term):
+                log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
 
-    # Grounding check: answer must be supported by context (at least one segment appears in context)
-    if not _is_not_found_answer(answer) and not _is_answer_grounded_in_context(
-        answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE
-    ):
-        log.info("grounding_check: answer not supported by context; overriding to not_found")
-        answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
-    # For synthesis intent, additionally require at least one verbatim or near-verbatim sentence from context
-    if (
-        intent == QUERY_INTENT_SYNTHESIS
-        and not _is_not_found_answer(answer)
-        and not _answer_has_verbatim_support(answer, context_text)
-    ):
-        log.info("grounding_check: synthesis answer has no verbatim support in context; overriding to not_found")
-        answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+    # Grounding check: fact_definition/metadata use relaxed grounding; synthesis and others use strict
+    if not _is_not_found_answer(answer):
+        if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
+            if not _is_answer_loosely_grounded(answer, context_text):
+                log.info("grounding_check: answer not loosely grounded (fact_definition/metadata); overriding to not_found")
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+        else:
+            if not _is_answer_grounded_in_context(
+                answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE
+            ):
+                log.info("grounding_check: answer not supported by context; overriding to not_found")
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+    # Synthesis verbatim (Option A): override to not_found only when main grounding failed; if grounded but no verbatim, keep answer and ensure source
+    if intent == QUERY_INTENT_SYNTHESIS and not _is_not_found_answer(answer) and not _answer_has_verbatim_support(answer, context_text):
+        if _is_answer_grounded_in_context(answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE):
+            if "(Page " not in answer and "(Pages " not in answer and "(Source:" not in answer:
+                answer = answer.rstrip(".").rstrip() + " (Source: provided context)."
+        else:
+            log.info("grounding_check: synthesis answer not grounded; overriding to not_found")
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
 
     # Confabulation: blocklist terms in answer but not in context — remove offending sentences; replace whole answer only if nothing left
     offending = _get_blocklisted_confabulation_terms(answer, context_text)
@@ -686,12 +747,36 @@ _SNIPPET_DISPLAY_CHARS = 280
 _GROUNDING_MIN_SEGMENT_LEN = 25
 # For short answers (e.g. decree + date), allow normalized overlap (punctuation/whitespace collapsed)
 _GROUNDING_SHORT_ANSWER_LEN = 80
+# Relaxed grounding for fact_definition/metadata: shorter segment or short-answer normalized match
+_GROUNDING_RELAXED_MIN_SEGMENT = 15
+_GROUNDING_LOOSE_SHORT_ANSWER_LEN = 100
 
 
 def _normalize_for_grounding(text: str) -> str:
     """Collapse punctuation and whitespace for short-answer grounding comparison."""
     t = re.sub(r"[\s,;:.\-–—]+", " ", text).strip().lower()
     return " ".join(t.split())
+
+
+def _is_answer_loosely_grounded(answer: str, context: str) -> bool:
+    """True if any segment >= 15 chars appears in context, or answer is short and normalized phrase in context. For fact_definition/metadata."""
+    if not answer or not context:
+        return False
+    body = re.sub(r"\(Page\s+\d+\)|\(Pages\s+\d+\s*[–\-]\s*\d+\)", "", answer, flags=re.IGNORECASE)
+    body = re.sub(r"\(Source:\s*provided context\.?\)", "", body, flags=re.IGNORECASE)
+    body = body.strip()
+    if not body:
+        return True
+    body_norm = re.sub(r"\s+", " ", body).strip().lower()
+    ctx_norm = re.sub(r"\s+", " ", context.strip()).lower()
+    if len(body_norm) <= _GROUNDING_LOOSE_SHORT_ANSWER_LEN:
+        if _normalize_for_grounding(body) in _normalize_for_grounding(context):
+            return True
+    for i in range(len(body_norm) - _GROUNDING_RELAXED_MIN_SEGMENT + 1):
+        segment = body_norm[i : i + _GROUNDING_RELAXED_MIN_SEGMENT]
+        if segment in ctx_norm:
+            return True
+    return False
 
 
 _VERBATIM_SUPPORT_MIN_SEGMENT = 30

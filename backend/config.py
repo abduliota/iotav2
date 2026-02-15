@@ -275,7 +275,7 @@ SIMPLE_RAG_SCOPE_KEYWORDS = [
     s.strip().lower()
     for s in os.getenv(
         "SIMPLE_RAG_SCOPE_KEYWORDS",
-        "sama|nora|bank|banks|banking|license|licensing|regulation|regulatory|consumer|compliance|report|capital|requirement|cybersecurity|ساما|نورا|بنك|بنوك|ترخيص|قانون|مراقبة",
+        "sama|nora|bank|banks|banking|license|licensing|regulation|regulatory|consumer|compliance|report|capital|requirement|cybersecurity|remuneration|account opening|related parties|shariah|aml|branch|depositor|digital|penalties|outsourcing|audit|ساما|نورا|بنك|بنوك|ترخيص|قانون|مراقبة|مكافآت|فتح الحساب|أطراف مرتبطة|شرعة|غسيل أموال|فرع|مودع|رقمية|عقوبات",
     ).split("|")
     if s.strip()
 ]
@@ -348,6 +348,11 @@ SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION = os.getenv(
 SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS",
     "For criteria or requirements questions, at least one sentence in your answer must be a direct quote or near-verbatim restatement from the context, followed by (Page X).",
+)
+# Optional system line for metadata questions (law number, decree number, date): extract from headers/first articles
+SIMPLE_RAG_SYSTEM_PROMPT_METADATA = os.getenv(
+    "SIMPLE_RAG_SYSTEM_PROMPT_METADATA",
+    "For questions about law number, decree number, or date: extract the exact text from document headers or first articles and cite (Page X) or (Source: provided context).",
 )
 # Arabic queries: reinforce no translation beyond context (env-overridable)
 SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX = os.getenv(
