@@ -1,8 +1,8 @@
-"""Qwen 7B Instruct generation layer (Stage 4).
+"""Qwen 1.8B Instruct generation layer (Stage 4).
 
-Loads Qwen2-7B-Instruct in 4-bit and exposes a deterministic generate_answer()
-function that follows the strict compliance system prompt defined in
-Core/06_generation_layer.md.
+Loads Qwen1.5-1.8B-Chat (or QWEN_MODEL from config) in 4-bit and exposes a
+deterministic generate_answer() function that follows the strict compliance
+system prompt defined in Core/06_generation_layer.md.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _model: Optional[AutoModelForCausalLM] = None
 
 
 def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
-    """Lazy-load Qwen 7B Instruct model and tokenizer in 4-bit on single GPU (persistent)."""
+    """Lazy-load Qwen 1.8B Instruct model and tokenizer in 4-bit on single GPU (persistent)."""
     global _tokenizer, _model
     if _tokenizer is not None and _model is not None:
         return _tokenizer, _model
@@ -36,25 +36,92 @@ def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
         token=_HF_TOKEN,
     )
 
-    # 4-bit quantization so 7B fits in ~6GB VRAM (e.g. RTX 4050 Laptop)
+    # 4-bit quantization; 1.8B fits easily in ~6GB VRAM (e.g. RTX 4050 Laptop)
+    # Ensure CUDA is available
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available. GPU is required for quantization.")
+    
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True,
     )
-    model = AutoModelForCausalLM.from_pretrained(
-        QWEN_MODEL,
-        trust_remote_code=True,
-        quantization_config=bnb_config,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        token=_HF_TOKEN,
-    )
+    # Load quantized model - workaround: patch PreTrainedModel.to() to skip for quantized models
+    # bitsandbytes already places quantized models on GPU, so .to() calls should be no-ops
+    import transformers.modeling_utils as modeling_utils
+    original_to = modeling_utils.PreTrainedModel.to
+    
+    # Flag to track that we're loading a quantized model
+    _loading_quantized = [True]  # Use list to allow modification in nested scope
+    
+    def patched_to(self, *args, **kwargs):
+        # During quantized model loading, always skip .to() calls
+        # This prevents errors when dispatch_model tries to call .to() before
+        # quantization attributes are fully set
+        if _loading_quantized[0]:
+            return self
+        
+        # After loading, check if model is quantized using multiple indicators
+        if (hasattr(self, 'hf_quantizer') and self.hf_quantizer is not None) or \
+           (hasattr(self, 'quantization_config') and self.quantization_config is not None) or \
+           (hasattr(self, '_hf_quantizer') and self._hf_quantizer is not None):
+            return self
+        
+        # Check for BitsAndBytes modules as fallback indicator
+        if hasattr(self, 'named_modules'):
+            try:
+                for name, module in self.named_modules():
+                    module_type = str(type(module))
+                    if 'BitsAndBytes' in module_type or 'bnb' in module_type.lower():
+                        return self
+            except Exception:
+                pass  # If check fails, proceed with original .to()
+        
+        # Non-quantized model - use original .to()
+        return original_to(self, *args, **kwargs)
+    
+    modeling_utils.PreTrainedModel.to = patched_to
+    
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            QWEN_MODEL,
+            trust_remote_code=True,
+            quantization_config=bnb_config,
+            torch_dtype=torch.float16,
+            device_map="auto",  # Use device_map="auto" to handle quantization properly
+            token=_HF_TOKEN,
+        )
+    finally:
+        # Restore original .to() method and reset flag
+        modeling_utils.PreTrainedModel.to = original_to
+        _loading_quantized[0] = False
+
+    # RoPE (cos/sin) and other buffers were created on CPU and never moved because
+    # patched .to() is a no-op for quantized models. Move each module's buffers to
+    # that module's parameter device so cos[position_ids] in Qwen2 doesn't crash.
+    _move_buffers_to_module_device(model)
 
     _tokenizer = tokenizer
     _model = model
     return tokenizer, model
+
+
+def _move_buffers_to_module_device(module: torch.nn.Module) -> None:
+    """Move each submodule's buffers to the same device as that submodule's parameters.
+    Modules with only buffers (e.g. Qwen2RotaryEmbedding) are moved to the root model's
+    device. Fixes RoPE (cos_cached/sin_cached) left on CPU when PreTrainedModel.to()
+    is patched during quantized load."""
+    root_device = next(module.parameters()).device
+    for m in module.modules():
+        bufs = list(m.buffers(recurse=False))
+        if not bufs:
+            continue
+        params = list(m.parameters(recurse=False))
+        device = next(m.parameters(recurse=False)).device if params else root_device
+        for buf in bufs:
+            if buf.device != device:
+                buf.data = buf.data.to(device)
 
 
 def _build_system_prompt() -> str:
@@ -260,7 +327,7 @@ def _is_garbled_answer(text: str) -> bool:
 
 
 def generate_answer(context: str, user_query: str) -> str:
-    """Generate a deterministic answer from Qwen 7B Instruct given context and query.
+    """Generate a deterministic answer from Qwen 1.8B Instruct given context and query.
 
     Parameters (from Core/06_generation_layer.md):
     - temperature = 0
@@ -293,7 +360,9 @@ def generate_answer(context: str, user_query: str) -> str:
         "Your response (cite pages):\n"
     )
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+    inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
 
     with torch.no_grad():
         outputs = model.generate(

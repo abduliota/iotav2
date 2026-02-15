@@ -11,6 +11,8 @@ export interface Message {
   content: string;
   references?: Reference[];
   timestamp: Date;
+  /** Backend message_id for feedback (session_messages.message_id). */
+  messageId?: string;
 }
 
 export interface Chat {
@@ -19,4 +21,6 @@ export interface Chat {
   messages: Message[];
   createdAt: Date;
   updatedAt: Date;
+  /** Backend session_id; set after first query response. */
+  serverSessionId?: string;
 }

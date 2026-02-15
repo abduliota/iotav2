@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ load_dotenv()
 import torch
 
 from config import (
+    CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE,
+    CONVERSATION_HISTORY_MAX_MESSAGES,
     AMBIGUITY_DETECTION_ENABLED,
     AMBIGUITY_MAX_WORDS,
     ANSWER_ARABIC_SCRIPT_RATIO_MIN,
@@ -52,7 +56,21 @@ from config import (
     MIN_CHUNK_SIMILARITY,
     MIN_CHUNK_SIMILARITY_ARABIC,
     MIN_CHUNK_SIMILARITY_SYNTHESIS,
+    MIN_CHUNK_SIMILARITY_PROCEDURAL,
+    MIN_CHUNK_SIMILARITY_FACT_DEFINITION,
+    MIN_CHUNK_SIMILARITY_METADATA,
+    ENABLE_STRICT_QUALITY_GATE,
+    MIN_CHUNK_SIMILARITY_STRICT,
+    MIN_CONFIDENCE_FOR_ANSWER,
+    ENABLE_ENTITY_CONTAINMENT_CHECK,
+    METADATA_ANSWER_MAX_CHARS,
+    ENABLE_ARABIC_ENTITY_PRESENCE_CHECK,
     RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD,
+    SECOND_PASS_EXTRA_K,
+    SECOND_PASS_MAX_K,
+    SECOND_PASS_MIN_SIMILARITY,
+    SECOND_PASS_SIMILARITY_THRESHOLD,
+    ENABLE_SECOND_PASS_RETRIEVAL,
     SIMPLE_RAG_LOG_PATH,
     SIMPLE_RAG_MAX_CONTENT_CHARS,
     SIMPLE_RAG_MAX_NEW_TOKENS,
@@ -75,6 +93,7 @@ from config import (
     SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST,
     SIMPLE_RAG_JURISDICTION_ANCHOR,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
+    SIMPLE_RAG_TEST_RUN_LOG_DIR,
     SIMPLE_RAG_TOP_K,
     SIMPLE_RAG_TOP_K_SYNTHESIS,
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
@@ -87,9 +106,10 @@ from query_multilingual import merge_chunks_rrf, translate_arabic_to_english
 from grounding import grounding_decision
 from extractive_builder import build_extractive_answer
 from ontology import get_documents_for_keywords
-from rerank import rerank_chunks
+from rerank import rerank_chunks, _extract_query_entity
 from translate import translate_to_arabic
 from supabase_client import get_client
+from users_sessions import get_session_message_history
 from qwen_model import _load_qwen
 from transformers import GenerationConfig
 
@@ -243,6 +263,35 @@ def _truncate_conversation_leakage(decoded: str) -> str:
     return out.strip()
 
 
+def _strip_leading_format_echo(decoded: str) -> str:
+    """Remove a leading line that echoes the format instruction (e.g. 'short description then bullet points:')."""
+    if not decoded or not decoded.strip():
+        return decoded
+    lines = decoded.split("\n")
+    if not lines:
+        return decoded
+    first = (lines[0] or "").strip()
+    if not first:
+        return decoded
+    first_lower = first.lower().rstrip(".:")
+    echo_prefixes = (
+        "short description then bullet points",
+        "format your answer as: short description then bullet points",
+        "answer with a brief summary then a bullet list",
+    )
+    if any(first_lower.startswith(p) or first_lower == p for p in echo_prefixes):
+        rest = "\n".join(lines[1:]).strip()
+        return rest if rest else decoded
+    return decoded
+
+
+def _strip_markdown_links(text: str) -> str:
+    """Replace markdown links [text](url) with link text only; no URLs in answers."""
+    if not text or not text.strip():
+        return text
+    return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+
+
 def _strip_filler_phrases(text: str) -> str:
     """Remove filler phrases (e.g. 'As mentioned earlier') from model output."""
     if not text or not text.strip():
@@ -259,11 +308,67 @@ def _strip_filler_phrases(text: str) -> str:
     return out
 
 
+def _normalize_markdown_bullets(text: str) -> str:
+    """Turn inline ' * ' into newline-before-bullet so Markdown renders lists."""
+    if not text or not text.strip():
+        return text
+    text = re.sub(r"([:.])\s*\*\s+", r"\1\n\n* ", text)
+    text = text.replace(" * ", "\n\n* ")
+    return text
+
+
+def _normalize_answer_layout(text: str) -> str:
+    """Collapse excess newlines and ensure consistent spacing."""
+    if not text or not text.strip():
+        return text
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _fix_nora_norway_confusion(answer: str, user_query: str) -> str:
+    """Correct NORA/Norway hallucination: replace Norwegian/Norra/Norway with NORA/Saudi when answer is about NORA."""
+    if not answer or not answer.strip():
+        return answer
+    q = (user_query or "").lower()
+    a = answer
+    if "nora" not in q and "nora" not in answer.lower():
+        return answer
+    # Only apply when the answer is about NORA (Saudi regulatory authority)
+    a = re.sub(r"\bNorwegian\b", "NORA", a, flags=re.IGNORECASE)
+    a = re.sub(r"\bNorra\b", "NORA", a, flags=re.IGNORECASE)
+    # "Norway" in regulator context often means Saudi Arabia for this domain
+    a = re.sub(r"\bNorway has\b", "NORA has", a, flags=re.IGNORECASE)
+    a = re.sub(r"\bNorway's\b", "NORA's", a, flags=re.IGNORECASE)
+    a = re.sub(r"\bin Norway\b", "in Saudi Arabia", a, flags=re.IGNORECASE)
+    return a
+
+
 def _normalize_not_found_for_strip(text: str) -> str:
     """Normalize for comparison: strip, collapse whitespace, lower case."""
     if not text:
         return ""
     return " ".join(text.strip().lower().split())
+
+
+def _truncate_at_unexpected_cjk(text: str, max_cjk_run: int = 4) -> str:
+    """Truncate before first long run of CJK when answer should be English/Arabic only."""
+    if not text or max_cjk_run < 1:
+        return text
+    pattern = re.compile(
+        r"[\u4e00-\u9fff\u3000-\u303f\u3100-\u312f]{" + str(max_cjk_run) + r",}"
+    )
+    m = pattern.search(text)
+    if m:
+        return text[: m.start()].rstrip()
+    return text
+
+
+def _strip_cjk_chars(text: str) -> str:
+    """Remove CJK characters so answer is English/Arabic only."""
+    if not text:
+        return text
+    out = re.sub(r"[\u4e00-\u9fff\u3000-\u303f\u3100-\u312f]+", " ", text)
+    return re.sub(r" +", " ", out).strip()  # collapse spaces left after removal
 
 
 def _strip_trailing_not_found(answer: str) -> str:
@@ -428,10 +533,40 @@ def _is_arabic_query(text: str) -> bool:
     return any("\u0600" <= c <= "\u06FF" for c in text)
 
 
+def _is_chinese_query(text: str) -> bool:
+    """True if text contains a run of CJK characters (e.g. Chinese)."""
+    if not text or not text.strip():
+        return False
+    return bool(re.search(r"[\u4e00-\u9fff\u3000-\u303f\u3100-\u312f]{2,}", text))
+
+
 def _chunk_has_arabic_content(chunk: dict[str, Any]) -> bool:
     """True if chunk content or section_title contains Arabic script."""
     text = (chunk.get("content") or "") + " " + (chunk.get("section_title") or "")
     return any("\u0600" <= c <= "\u06FF" for c in text)
+
+
+_DEFINITION_MARKERS = ("definitions", "definition", "تعريف", "تعريفات", "means", "is defined as")
+
+
+def _chunk_has_definition_marker(chunk: dict[str, Any]) -> bool:
+    """True if chunk section_title or content suggests a Definitions section or definitional content."""
+    title = (chunk.get("section_title") or "").lower()
+    content = (chunk.get("content") or "")[:500].lower()
+    text = title + " " + content
+    return any(m in text for m in _DEFINITION_MARKERS)
+
+
+def _reorder_definition_chunks_first(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For definition intent: put chunks with definition markers first, preserving order within each group."""
+    with_def: list[dict[str, Any]] = []
+    without_def: list[dict[str, Any]] = []
+    for c in chunks:
+        if _chunk_has_definition_marker(c):
+            with_def.append(c)
+        else:
+            without_def.append(c)
+    return with_def + without_def
 
 
 def _reorder_arabic_first(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -869,7 +1004,10 @@ def _ensure_citation_fallback(
 
 
 def generate_answer_simple(
-    context_text: str, user_query: str, intent: str = QUERY_INTENT_OTHER
+    context_text: str,
+    user_query: str,
+    intent: str = QUERY_INTENT_OTHER,
+    conversation_history: list[dict] | None = None,
 ) -> str:
     """Use Qwen to turn context + question into a detailed, well-formed answer (DB-only)."""
     tokenizer, model = _load_qwen()
@@ -892,16 +1030,30 @@ def generate_answer_simple(
     question_for_prompt = user_query
     if _is_arabic_query(user_query):
         question_for_prompt = _get_arabic_instruction_prefix() + user_query
-    user_block = user_template.format(context=context_text, question=question_for_prompt)
+    max_chars = CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE if CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE > 0 else None
+    if conversation_history:
+        parts = []
+        for row in conversation_history:
+            u = (row.get("user_message") or "").strip()
+            a = (row.get("assistant_message") or "").strip()
+            if max_chars:
+                u = (u[:max_chars] + "...") if len(u) > max_chars else u
+                a = (a[:max_chars] + "...") if len(a) > max_chars else a
+            parts.append(f"User: {u}\nAssistant: {a}\n")
+        history_block = "### RECENT CONVERSATION\n\n" + "".join(parts) + "\n\n"
+        user_block = history_block + "### CONTEXT\n\n" + context_text + "\n\n### QUESTION\n" + question_for_prompt + "\n\nOutput only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
+    else:
+        user_block = user_template.format(context=context_text, question=question_for_prompt)
     prompt = f"{system_prompt}\n\n{user_block}\n"
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+    inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
     input_length = inputs["input_ids"].shape[1]
     gen_config = GenerationConfig(
         max_new_tokens=SIMPLE_RAG_MAX_NEW_TOKENS,
         do_sample=False,
         repetition_penalty=1.2,
-        temperature=0.0,
     )
     with torch.no_grad():
         outputs = model.generate(**inputs, generation_config=gen_config)
@@ -911,6 +1063,10 @@ def generate_answer_simple(
     decoded = tokenizer.decode(generated_ids, skip_special_tokens=True)
     decoded = _truncate_instruction_echo(decoded)
     decoded = _truncate_conversation_leakage(decoded)
+    decoded = _strip_leading_format_echo(decoded)
+    if not _is_chinese_query(user_query):
+        decoded = _truncate_at_unexpected_cjk(decoded)
+        decoded = _strip_cjk_chars(decoded)
     marker = SIMPLE_RAG_ANSWER_MARKER
     if marker in decoded:
         answer = decoded.rsplit(marker, 1)[-1].strip()
@@ -918,10 +1074,19 @@ def generate_answer_simple(
         answer = decoded.strip()
     answer = _strip_filler_phrases(answer)
     answer = _strip_trailing_not_found(answer)
+    answer = _normalize_markdown_bullets(answer)
+    answer = _normalize_answer_layout(answer)
+    answer = _fix_nora_norway_confusion(answer, user_query)
+    answer = _strip_markdown_links(answer)
     return answer
 
 
-def answer_query(user_query: str, top_k: int | None = None, category: str | None = None) -> dict[str, Any]:
+def answer_query(
+    user_query: str,
+    top_k: int | None = None,
+    category: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     """Run simple RAG: embed -> fetch -> build context -> Qwen -> return answer and sources."""
     log = _get_logger()
     if not user_query or not user_query.strip():
@@ -973,12 +1138,34 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 chunks = merge_chunks_rrf([chunks, chunks_en], rrf_k=RRF_K, top_n=k)
             except Exception as e:
                 log.debug("dual_retrieve (EN) failed, using single: %s", e)
+    # Second-pass retrieval (3.2): when top similarity is in [floor, threshold), re-fetch with larger k and merge
+    if ENABLE_SECOND_PASS_RETRIEVAL and chunks and SECOND_PASS_SIMILARITY_THRESHOLD > 0:
+        top_sim_raw = chunks[0].get("cosine_similarity") or chunks[0].get("similarity")
+        if top_sim_raw is not None:
+            top_sim_val = float(top_sim_raw)
+            if SECOND_PASS_MIN_SIMILARITY <= top_sim_val < SECOND_PASS_SIMILARITY_THRESHOLD:
+                k2 = min(k + SECOND_PASS_EXTRA_K, SECOND_PASS_MAX_K)
+                if k2 > k:
+                    try:
+                        chunks_2 = fetch_chunks(query_embedding, limit=k2)
+                        chunks = merge_chunks_rrf([chunks, chunks_2], rrf_k=RRF_K, top_n=k)
+                        log.debug("second_pass: merged with k2=%d", k2)
+                    except Exception as e:
+                        log.debug("second_pass failed: %s", e)
     preferred_doc_names = get_documents_for_keywords(q)
     if ENABLE_RERANKING and chunks:
         chunks = rerank_chunks(q, chunks, top_n=k, preferred_doc_names=preferred_doc_names, intent=intent)
     if _is_arabic_query(q) and chunks:
         chunks = _reorder_arabic_first(chunks)
     log.debug("retrieval: %d chunks", len(chunks))
+    # Phase 6.2: Arabic entity presence – at least one top chunk should contain the query entity
+    if ENABLE_ARABIC_ENTITY_PRESENCE_CHECK and _is_arabic_query(q) and chunks:
+        entity = _extract_query_entity(q)
+        if entity and len(entity.strip()) >= 2:
+            top5 = chunks[:5]
+            if not any((entity.strip().lower() in (c.get("content") or "").lower()) for c in top5):
+                log.info("arabic_entity_presence: query entity '%s' not in top chunks; returning not_found", entity[:50])
+                return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC, "sources": []}
     if chunks:
         top_docs = [(r.get("document_name"), r.get("page_start"), r.get("page_end")) for r in chunks[:3]]
         log.debug("top chunks: %s", top_docs)
@@ -1001,8 +1188,17 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             "sources": [],
         }
 
-    # Effective threshold: lower for synthesis and Arabic (retrieval recall)
-    effective_threshold = MIN_CHUNK_SIMILARITY
+    # Effective threshold: per-intent base, then lower for synthesis and Arabic (retrieval recall)
+    intent_threshold = MIN_CHUNK_SIMILARITY
+    if intent == QUERY_INTENT_SYNTHESIS:
+        intent_threshold = MIN_CHUNK_SIMILARITY_SYNTHESIS
+    elif intent == QUERY_INTENT_PROCEDURAL:
+        intent_threshold = MIN_CHUNK_SIMILARITY_PROCEDURAL
+    elif intent == QUERY_INTENT_FACT_DEFINITION:
+        intent_threshold = MIN_CHUNK_SIMILARITY_FACT_DEFINITION
+    elif intent == QUERY_INTENT_METADATA:
+        intent_threshold = MIN_CHUNK_SIMILARITY_METADATA
+    effective_threshold = intent_threshold
     if intent == QUERY_INTENT_SYNTHESIS:
         effective_threshold = min(effective_threshold, MIN_CHUNK_SIMILARITY_SYNTHESIS)
     if _is_arabic_query(q):
@@ -1031,10 +1227,32 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             log.info("similarity_gate: no chunks above effective threshold %.3f; returning not_found", effective_threshold)
             return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
 
+    # Intent-aware upper bound: for fact_definition/metadata require at least one chunk above strict bar (reduce noise)
+    if ENABLE_STRICT_QUALITY_GATE and MIN_CHUNK_SIMILARITY_STRICT > 0 and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
+        top_sim = _top_retrieval_similarity(chunks)
+        if top_sim < MIN_CHUNK_SIMILARITY_STRICT:
+            log.info("strict_quality_gate: top similarity %.3f < MIN_CHUNK_SIMILARITY_STRICT %.3f (intent=%s); returning not_found", top_sim, MIN_CHUNK_SIMILARITY_STRICT, intent)
+            return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
+
     for c in chunks:
         c.pop("_rerank_score", None)
 
+    # Intent-based retrieval: for fact_definition prefer chunks with definition markers (2.1, 2.2)
+    if intent == QUERY_INTENT_FACT_DEFINITION and chunks:
+        definition_chunks = [c for c in chunks if _chunk_has_definition_marker(c)]
+        if definition_chunks:
+            chunks = _reorder_definition_chunks_first(chunks)
+
     context_text = build_context(chunks)
+    conversation_history: list[dict] = []
+    if session_id:
+        try:
+            conversation_history = get_session_message_history(
+                session_id, limit=CONVERSATION_HISTORY_MAX_MESSAGES
+            )
+        except Exception as e:
+            log.debug("get_session_message_history failed (continuing without history): %s", e)
+    # Routing (7.4): extraction only for fact_definition/metadata; synthesis uses multi-chunk generative path.
     if ENABLE_EXTRACTIVE_BUILDER and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
         answer = build_extractive_answer(q, chunks, intent, max_chunks=1)
         if not answer or not answer.strip():
@@ -1042,7 +1260,9 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         log.debug("extractive_builder used for intent=%s", intent)
     else:
         try:
-            answer = generate_answer_simple(context_text, q, intent)
+            answer = generate_answer_simple(
+                context_text, q, intent, conversation_history=conversation_history or None
+            )
         except Exception as e:
             log.exception("generate_answer_simple failed: %s", e)
             raise
@@ -1053,7 +1273,8 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         if not _post_gen_similarity_ok(answer, chunks, POST_GEN_SIMILARITY_THRESHOLD):
             log.info("post_gen_similarity: answer not similar enough to chunks; overriding to not_found")
             answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
-    if _is_arabic_query(q) and ENABLE_ANSWER_LANGUAGE_CHECK and not _is_not_found_answer(answer):
+    # Phase 8.2: allow mixed answer when query is mixed (Arabic + Latin); require primarily Arabic only when query is clearly Arabic
+    if _is_arabic_query(q) and not _is_mixed_language(q) and ENABLE_ANSWER_LANGUAGE_CHECK and not _is_not_found_answer(answer):
         if not _is_answer_primarily_arabic(answer, ANSWER_ARABIC_SCRIPT_RATIO_MIN):
             # Translate back only when source answer is grounded and has citation (do not translate ungrounded)
             source_grounded = (
@@ -1084,6 +1305,33 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     if ENABLE_STRICT_SINGLE_LANGUAGE and not _is_not_found_answer(answer) and _is_mixed_language(answer):
         log.info("language_validator: mixed language detected; overriding to not_found")
         answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+
+    # Entity containment (5.3, 7.3): answer or context must contain query entity for fact_definition/metadata
+    if ENABLE_ENTITY_CONTAINMENT_CHECK and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA) and not _is_not_found_answer(answer):
+        entity = _extract_query_entity(q)
+        if entity and len(entity.strip()) >= 3:
+            answer_lower = (answer or "").lower()
+            context_lower = context_text.lower()
+            entity_lower = entity.strip().lower()
+            if entity_lower not in answer_lower and entity_lower not in context_lower:
+                log.info("entity_containment: query entity '%s' not in answer or context; overriding to not_found", entity[:50])
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+
+    # Metadata answers (5.5): restrict to short factual extractions; truncate long decree text
+    if intent == QUERY_INTENT_METADATA and not _is_not_found_answer(answer) and len(answer or "") > METADATA_ANSWER_MAX_CHARS:
+        body = answer
+        citation_suffix = ""
+        if "(Page " in answer or "(Pages " in answer:
+            match = re.search(r"(\s*\(Pages?\s+\d+[^\)]*\)\.?)\s*$", answer)
+            if match:
+                citation_suffix = match.group(1).strip()
+                body = answer[: match.start()].strip()
+        if len(body) > METADATA_ANSWER_MAX_CHARS:
+            body = body[: METADATA_ANSWER_MAX_CHARS].strip()
+            if not body.endswith("."):
+                body = body.rsplit(".", 1)[0] + "." if "." in body else body + "."
+            answer = (body + " " + citation_suffix).strip() if citation_suffix else body
+        log.debug("metadata_answer_truncated to %d chars", METADATA_ANSWER_MAX_CHARS)
 
     # Citation validation (run before guard): check cited pages exist in chunks
     citation_all_valid, citation_any_valid = _validate_citations(answer, chunks)
@@ -1196,6 +1444,13 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             answer = cleaned
             log.debug("kept answer after removing sentences containing generic phrases")
 
+    # Minimum confidence gate: combined similarity + grounding + citation (0 = disabled)
+    if MIN_CONFIDENCE_FOR_ANSWER > 0 and not _is_not_found_answer(answer):
+        combined_confidence = 0.4 * top_sim + 0.4 * _grounding_confidence + 0.2 * (1.0 if citation_valid else 0.0)
+        if combined_confidence < MIN_CONFIDENCE_FOR_ANSWER:
+            log.info("min_confidence_gate: combined_confidence %.3f < MIN_CONFIDENCE_FOR_ANSWER %.3f; overriding to not_found", combined_confidence, MIN_CONFIDENCE_FOR_ANSWER)
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+
     log.debug("final_answer (preview): %s", (answer or "")[:300])
     cited_sentences = _extract_cited_sentences(answer) if answer else []
     cited_articles = _extract_article_numbers_from_answer(answer) if answer else []
@@ -1224,6 +1479,8 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         }
         for row in chunks
     ]
+    if _is_not_found_answer(answer):
+        sources = []
     out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
     if RETURN_CONFIDENCE_SCORE:
         out["confidence"] = 0.0 if _is_not_found_answer(answer) else _grounding_confidence
@@ -1426,9 +1683,43 @@ def format_response_for_display(user_query: str, result: dict[str, Any], snippet
     return "\n".join(lines)
 
 
+def _attach_test_run_log_handler() -> tuple[logging.FileHandler, Path]:
+    """Create a timestamped log file for this test run and attach a handler to the root logger. Returns (handler, path)."""
+    log_dir = Path(SIMPLE_RAG_TEST_RUN_LOG_DIR)
+    if not log_dir.is_absolute():
+        log_dir = BACKEND_DIR / log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = log_dir / f"simple_rag_test_{ts}.log"
+    path = path.resolve()
+    fh = logging.FileHandler(path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    )
+    root = logging.getLogger()
+    root.addHandler(fh)
+    return fh, path
+
+
+def _detach_test_run_log_handler(handler: logging.Handler) -> None:
+    """Remove the test-run file handler from the root logger and close it."""
+    root = logging.getLogger()
+    root.removeHandler(handler)
+    try:
+        handler.close()
+    except Exception:
+        pass
+
+
 def run_test_questions() -> None:
-    """Load test questions from JSON and run answer_query for each; print and log results."""
+    """Load test questions from JSON and run answer_query for each; print and log results.
+    Creates a new log file per run under SIMPLE_RAG_TEST_RUN_LOG_DIR with all log lines and a final stats section.
+    """
     log = _get_logger()
+    run_handler, run_log_path = _attach_test_run_log_handler()
+    log.info("test run log file: %s", run_log_path)
+    start_time = time.perf_counter()
     questions = _load_test_questions_json()
     categories_order = ["sama", "arabic", "generic", "generic_off_topic"]
     total = sum(len(questions.get(cat, [])) for cat in categories_order)
@@ -1441,24 +1732,105 @@ def run_test_questions() -> None:
         len(questions.get("generic_off_topic", [])),
     )
     n = 0
-    for category_key in categories_order:
-        qlist = questions.get(category_key, [])
-        category_label = "Off-topic" if category_key == "generic_off_topic" else category_key.capitalize()
-        for query in qlist:
-            n += 1
-            print(f"\n[{n}/{total}] [{category_label}] {query}")
-            print("-" * 60)
-            log.debug("[%d/%d] [%s] %s", n, total, category_label, query)
-            try:
-                result = answer_query(query, category=category_label)
-            except Exception as e:
-                log.exception("answer_query failed: %s", e)
-                raise
-            print(format_response_for_display(query, result))
-            log.debug("answer (preview): %s", (result["answer"] or "")[:200])
-            log.debug("sources_count: %d", len(result["sources"]))
-    log.info("run_test_questions done.")
-    print("\nDone.")
+    run_results: list[dict[str, Any]] = []
+    errors_count = 0
+    try:
+        for category_key in categories_order:
+            qlist = questions.get(category_key, [])
+            category_label = "Off-topic" if category_key == "generic_off_topic" else category_key.capitalize()
+            for query in qlist:
+                n += 1
+                print(f"\n[{n}/{total}] [{category_label}] {query}")
+                print("-" * 60)
+                log.debug("[%d/%d] [%s] %s", n, total, category_label, query)
+                try:
+                    result = answer_query(query, category=category_label)
+                    answer = result.get("answer") or ""
+                    not_found = _is_not_found_answer(answer)
+                    run_results.append({
+                        "index": n,
+                        "category": category_label,
+                        "query": query,
+                        "answer_preview": answer[:300] + ("..." if len(answer) > 300 else ""),
+                        "not_found": not_found,
+                        "sources_count": len(result.get("sources") or []),
+                        "error": None,
+                    })
+                except Exception as e:
+                    log.exception("answer_query failed: %s", e)
+                    errors_count += 1
+                    run_results.append({
+                        "index": n,
+                        "category": category_label,
+                        "query": query,
+                        "answer_preview": "",
+                        "not_found": True,
+                        "sources_count": 0,
+                        "error": str(e),
+                    })
+                    raise
+                print(format_response_for_display(query, result))
+                log.debug("answer (preview): %s", (result.get("answer") or "")[:200])
+                log.debug("sources_count: %d", len(result.get("sources") or []))
+    finally:
+        elapsed = time.perf_counter() - start_time
+        _detach_test_run_log_handler(run_handler)
+
+    # Append stats section to the run log file
+    not_found_count = sum(1 for r in run_results if r["not_found"])
+    by_category: dict[str, dict[str, Any]] = {}
+    for r in run_results:
+        cat = r["category"]
+        if cat not in by_category:
+            by_category[cat] = {"count": 0, "not_found": 0}
+        by_category[cat]["count"] += 1
+        if r["not_found"]:
+            by_category[cat]["not_found"] += 1
+    for cat, stats in by_category.items():
+        stats["not_found_rate"] = (stats["not_found"] / stats["count"]) if stats["count"] else 0.0
+
+    stats_lines = [
+        "",
+        "=" * 80,
+        "TEST RUN STATS",
+        "=" * 80,
+        f"Run log file: {run_log_path}",
+        f"Finished: {datetime.now(timezone.utc).isoformat()}",
+        f"Duration (seconds): {elapsed:.2f}",
+        f"Total questions: {total}",
+        f"Errors: {errors_count}",
+        f"Not found (count): {not_found_count}",
+        f"Not found (rate): {not_found_count / total:.2%}" if total else "N/A",
+        "",
+        "By category:",
+    ]
+    for cat in categories_order:
+        label = "Off-topic" if cat == "generic_off_topic" else cat.capitalize()
+        if label in by_category:
+            s = by_category[label]
+            stats_lines.append(
+                f"  {label}: count={s['count']}, not_found={s['not_found']}, not_found_rate={s['not_found_rate']:.2%}"
+            )
+    stats_lines.extend([
+        "",
+        "Per-question summary:",
+    ])
+    for r in run_results:
+        nf = "NOT_FOUND" if r["not_found"] else "answer"
+        err = f", error={r['error']}" if r.get("error") else ""
+        stats_lines.append(f"  [{r['index']}] {r['category']}: {nf}, sources={r['sources_count']}{err}")
+    stats_lines.append("=" * 80)
+
+    try:
+        with open(run_log_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(stats_lines) + "\n")
+    except Exception as e:
+        log.warning("Could not append stats to run log %s: %s", run_log_path, e)
+
+    log.info("run_test_questions done. Run log: %s | not_found=%d/%d, errors=%d, duration=%.2fs",
+             run_log_path, not_found_count, total, errors_count, elapsed)
+    print(f"\nDone. Run log: {run_log_path}")
+    print(f"Stats: not_found={not_found_count}/{total} ({not_found_count/total:.1%}), errors={errors_count}, duration={elapsed:.2f}s")
 
 
 if __name__ == "__main__":

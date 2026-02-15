@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Chat, Message } from '@/lib/types';
-import { getChat, saveChat } from '@/lib/storage';
+import { getChat, saveChat, getUserId, setUserId } from '@/lib/storage';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { ChatHistory } from '@/components/sidebar/ChatHistory';
 import { SummaryCard } from '@/components/dashboard/SummaryCard';
@@ -19,10 +19,30 @@ import { Menu } from 'lucide-react';
 export default function Home() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
+  const [userId, setUserIdState] = useState<string | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { remainingPrompts, canSend, incrementPrompt, resetPrompts } = usePromptLimit();
   const { isAuthenticated, register, login, logout } = useFingerprintAuth();
+
+  useEffect(() => {
+    const stored = getUserId();
+    if (stored) {
+      setUserIdState(stored);
+      return;
+    }
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    fetch(`${API_URL}/api/user`, { method: 'POST' })
+      .then((res) => res.json())
+      .then((data) => {
+        const id = data?.user_id;
+        if (id) {
+          setUserId(id);
+          setUserIdState(id);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -70,6 +90,13 @@ export default function Home() {
     }
 
     saveChat(chat);
+  };
+
+  const handleSessionId = (serverSessionId: string) => {
+    if (!currentChat) return;
+    const updated = { ...currentChat, serverSessionId, updatedAt: new Date() };
+    setCurrentChat(updated);
+    saveChat(updated);
   };
 
   const latestRefs = currentChat?.messages
@@ -231,7 +258,9 @@ export default function Home() {
                     onNewMessage={handleNewMessage}
                     canSend={isAuthenticated || canSend}
                     onLimitReached={() => setShowAuthModal(true)}
-                    sessionId={currentChat.id}
+                    sessionId={currentChat.serverSessionId ?? null}
+                    userId={userId}
+                    onSessionId={handleSessionId}
                   />
                 ) : (
                   <ChatInterface
@@ -240,6 +269,8 @@ export default function Home() {
                     onNewMessage={handleNewMessage}
                     canSend={isAuthenticated || canSend}
                     onLimitReached={() => setShowAuthModal(true)}
+                    userId={userId}
+                    onSessionId={handleSessionId}
                   />
                 )}
               </div>

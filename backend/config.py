@@ -61,12 +61,13 @@ HEADER_FOOTER_FREQUENCY_THRESHOLD = 0.6
 SENTENCE_END_CHARS = ".?!:؟؛"
 
 # ---- Stage 2: Chunking (Qwen tokenizer) ----
-CHUNK_SIZE = 700
-CHUNK_OVERLAP = 120
+# Phase 4.1: 400–500 improves semantic alignment; requires re-chunking and re-embedding when changed.
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "500"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
 BACKTRACK_TOKENS = 50  # max tokens to backtrack for sentence boundary
 SHORT_PAGE_TOKEN_THRESHOLD = 300  # merge page with next if below this
 LONG_SECTION_TOKEN_THRESHOLD = 2000  # split by paragraphs first if above
-QWEN_MODEL = "Qwen/Qwen2-7B-Instruct"
+QWEN_MODEL = os.getenv("QWEN_MODEL", "Qwen/Qwen1.5-1.8B-Chat")
 # For gated models and to avoid rate limits, set HF_TOKEN or HUGGING_FACE_HUB_TOKEN in env.
 
 # ---- Stage 3: Embeddings and Supabase ----
@@ -88,6 +89,9 @@ EMBEDDING_DIMENSION = (
 # Supabase (read from env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 # Batch size for chunk inserts
 CHUNK_BATCH_SIZE = 200  # 100-300 recommended
+# Ingestion / schema (Phase 4): Backend expects section_title on chunks (4.2). Optional: document_type on
+# documents/chunks for intent-based filter/boost (4.3); is_definition_section / article_numbers at ingest for
+# definition intent (4.4). Requires DB migration and ingestion pipeline updates; see ingestion docs.
 
 # ---- Stage 4: Query, Retrieval, and Generation ----
 # Similarity threshold for accepting retrieval (cosine similarity in [0, 1]).
@@ -102,6 +106,12 @@ MIN_CHUNK_SIMILARITY = _env_float("MIN_CHUNK_SIMILARITY", 0.50)
 # Per-intent / Arabic: lower bar for synthesis and Arabic queries (retrieval recall)
 MIN_CHUNK_SIMILARITY_SYNTHESIS = _env_float("MIN_CHUNK_SIMILARITY_SYNTHESIS", 0.42)
 MIN_CHUNK_SIMILARITY_ARABIC = _env_float("MIN_CHUNK_SIMILARITY_ARABIC", 0.45)
+MIN_CHUNK_SIMILARITY_PROCEDURAL = _env_float("MIN_CHUNK_SIMILARITY_PROCEDURAL", 0.48)
+MIN_CHUNK_SIMILARITY_FACT_DEFINITION = _env_float("MIN_CHUNK_SIMILARITY_FACT_DEFINITION", 0.47)
+MIN_CHUNK_SIMILARITY_METADATA = _env_float("MIN_CHUNK_SIMILARITY_METADATA", 0.47)
+# Intent-aware upper bound: for fact_definition/metadata require at least one chunk above this (0 = disabled)
+ENABLE_STRICT_QUALITY_GATE = _env_bool("ENABLE_STRICT_QUALITY_GATE", False)
+MIN_CHUNK_SIMILARITY_STRICT = _env_float("MIN_CHUNK_SIMILARITY_STRICT", 0.55)
 # If top chunk rerank score >= this, skip similarity gate (0 = disabled)
 RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD = _env_float("RERANK_BYPASS_SIMILARITY_GATE_THRESHOLD", 0.0)
 
@@ -151,6 +161,15 @@ if _json_acr:
 # Query expansion settings
 ENABLE_QUERY_EXPANSION = True
 MAX_QUERY_VARIATIONS = 3  # Including original query
+# Short query template expansion: when query has <= this many words or <= max chars, append regulatory phrase for embedding
+SHORT_QUERY_MAX_WORDS = int(os.getenv("SHORT_QUERY_MAX_WORDS", "5"))
+SHORT_QUERY_MAX_CHARS = int(os.getenv("SHORT_QUERY_MAX_CHARS", "60"))
+# Second-pass retrieval: when top similarity is below threshold but above floor, re-fetch with larger k and merge with RRF
+ENABLE_SECOND_PASS_RETRIEVAL = _env_bool("ENABLE_SECOND_PASS_RETRIEVAL", False)
+SECOND_PASS_SIMILARITY_THRESHOLD = _env_float("SECOND_PASS_SIMILARITY_THRESHOLD", 0.52)
+SECOND_PASS_MIN_SIMILARITY = _env_float("SECOND_PASS_MIN_SIMILARITY", 0.35)
+SECOND_PASS_EXTRA_K = int(os.getenv("SECOND_PASS_EXTRA_K", "5"))
+SECOND_PASS_MAX_K = int(os.getenv("SECOND_PASS_MAX_K", "20"))
 # RRF merge when combining multi-query results (reciprocal rank fusion)
 ENABLE_RRF_MERGE = _env_bool("ENABLE_RRF_MERGE", True)
 RRF_K = int(os.getenv("RRF_K", "60"))  # RRF constant; higher k reduces rank sensitivity
@@ -312,6 +331,17 @@ RERANKER_MMR_DIVERSITY_LAMBDA = _env_float("RERANKER_MMR_DIVERSITY_LAMBDA", 0.7)
 # Title exact match: extra boost when query (normalized) equals or is contained in section_title or document name
 RERANKER_TITLE_EXACT_MATCH_BOOST = _env_float("RERANKER_TITLE_EXACT_MATCH_BOOST", 0.2)
 ENABLE_RERANKER_TITLE_EXACT_BOOST = _env_bool("ENABLE_RERANKER_TITLE_EXACT_BOOST", True)
+# Entity exact match: boost when extracted query entity (e.g. term after "what is") appears verbatim in chunk content
+RERANKER_ENTITY_EXACT_BOOST = _env_float("RERANKER_ENTITY_EXACT_BOOST", 0.15)
+ENABLE_RERANKER_ENTITY_EXACT_BOOST = _env_bool("ENABLE_RERANKER_ENTITY_EXACT_BOOST", True)
+# Phase 6.1: combine cross-encoder (semantic) with lexical score (keyword overlap); reduce over-weighting of surface similarity
+RERANKER_SEMANTIC_WEIGHT = _env_float("RERANKER_SEMANTIC_WEIGHT", 0.7)
+RERANKER_LEXICAL_WEIGHT = _env_float("RERANKER_LEXICAL_WEIGHT", 0.3)
+# Phase 6.4/6.5: synthesis intent – extra boost for same document, small penalty for cross-document
+RERANKER_SAME_DOC_BOOST_SYNTHESIS = _env_float("RERANKER_SAME_DOC_BOOST_SYNTHESIS", 0.08)
+RERANKER_CROSS_DOC_PENALTY = _env_float("RERANKER_CROSS_DOC_PENALTY", -0.01)
+# Phase 6.2: for Arabic queries, require at least one top chunk to contain the query entity
+ENABLE_ARABIC_ENTITY_PRESENCE_CHECK = _env_bool("ENABLE_ARABIC_ENTITY_PRESENCE_CHECK", False)
 ENABLE_SELF_RAG = _env_bool("ENABLE_SELF_RAG", True)
 SELF_RAG_MAX_RETRIES = int(os.getenv("SELF_RAG_MAX_RETRIES", "1"))
 SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
@@ -320,6 +350,7 @@ SELF_RAG_POOR_ANSWER_MIN_LEN = int(os.getenv("SELF_RAG_POOR_ANSWER_MIN_LEN", "30
 SELF_RAG_CITATION_PHRASES = ["page", "according to", "source", "sama", "nora"]
 
 # ---- Simple RAG (single-file pipeline): all settings from env/config, no hardcoding in code ----
+# Phase 7.5: lowering TOP_K reduces retrieved_but_not_used noise; retrieved_but_not_used is debug-only when ENABLE_RETRIEVED_BUT_NOT_USED_LOG
 SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "5"))
 # Larger k for synthesis/criteria questions to pull deeper sections
 SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "5"))
@@ -331,6 +362,13 @@ SIMPLE_RAG_NOT_FOUND_MESSAGE = os.getenv(
     "SIMPLE_RAG_NOT_FOUND_MESSAGE",
     "Information not found in SAMA/NORA documents.",
 )
+# Conversation history for session context: max exchanges to include, and per-message char truncation (0 = no truncation)
+CONVERSATION_HISTORY_MAX_MESSAGES = int(
+    os.getenv("CONVERSATION_HISTORY_MAX_MESSAGES", "20")
+)
+CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE = int(
+    os.getenv("CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE", "500")
+)
 SIMPLE_RAG_ANSWER_MARKER = os.getenv(
     "SIMPLE_RAG_ANSWER_MARKER",
     "Answer in clear sentences using only the context above:",
@@ -341,6 +379,11 @@ SIMPLE_RAG_LOG_PATH = os.getenv(
     "SIMPLE_RAG_LOG_PATH",
     str(SIMPLE_RAG_LOG_DIR / "simple_rag.log"),
 )
+# Per-run test log: each test run writes to logs/test_runs/simple_rag_test_YYYYMMDD_HHMMSS.log
+SIMPLE_RAG_TEST_RUN_LOG_DIR = os.getenv(
+    "SIMPLE_RAG_TEST_RUN_LOG_DIR",
+    str(SIMPLE_RAG_LOG_DIR / "test_runs"),
+)
 SIMPLE_RAG_STRICT_CITATION = _env_bool("SIMPLE_RAG_STRICT_CITATION", True)
 # Synthesis: if title match confidence >= this, do not override to not_found for verbatim failure (0 = disabled)
 SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD = _env_float("SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD", 0.0)
@@ -349,20 +392,22 @@ SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE = os.getenv(
     "I only answer questions about SAMA and NORA documents. I don't have information on that.",
 )
 # Pipe-separated: query must contain at least one to be in-scope (SAMA/NORA/banking/regulations)
+# Expanded with regulatory-specific phrases (Phase 3.3); override via env SIMPLE_RAG_SCOPE_KEYWORDS
 SIMPLE_RAG_SCOPE_KEYWORDS = [
     s.strip().lower()
     for s in os.getenv(
         "SIMPLE_RAG_SCOPE_KEYWORDS",
-        "sama|nora|bank|banks|banking|license|licensing|regulation|regulatory|consumer|compliance|report|capital|requirement|cybersecurity|remuneration|account opening|related parties|shariah|aml|branch|depositor|digital|penalties|outsourcing|audit|ساما|نورا|بنك|بنوك|ترخيص|قانون|مراقبة|مكافآت|فتح الحساب|أطراف مرتبطة|شرعة|غسيل أموال|فرع|مودع|رقمية|عقوبات",
+        "sama|nora|bank|banks|banking|license|licensing|regulation|regulatory|consumer|compliance|report|capital|requirement|cybersecurity|remuneration|account opening|related parties|shariah|aml|branch|depositor|digital|penalties|outsourcing|audit|decree|circular|guideline|framework|rulebook|ساما|نورا|بنك|بنوك|ترخيص|قانون|مراقبة|مكافآت|فتح الحساب|أطراف مرتبطة|شرعة|غسيل أموال|فرع|مودع|رقمية|عقوبات|تعليمات|مرسوم|هيئة",
     ).split("|")
     if s.strip()
 ]
 # Pipe-separated: if query contains any of these (case-insensitive), treat as off-topic and refuse
+# Expanded with more patterns (Phase 3.3)
 SIMPLE_RAG_OFF_TOPIC_PATTERNS = [
     s.strip().lower()
     for s in os.getenv(
         "SIMPLE_RAG_OFF_TOPIC_PATTERNS",
-        "us president|who is the president|who's the president|weather|sports|football|recipe|movie|russia|where is|world cup|capital of france",
+        "us president|who is the president|who's the president|weather|sports|football|recipe|movie|russia|where is|world cup|capital of france|stock market|crypto price|bitcoin|ethereum|recipe for|how to cook",
     ).split("|")
     if s.strip()
 ]
@@ -409,20 +454,19 @@ SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT = (
     "Before answering, check: Is the answer directly supported by a phrase in the context? If not, respond exactly: Information not found in SAMA/NORA documents.\n\n"
     "CRITICAL: Every sentence in your answer MUST end with (Page X) or (Pages X–Y). Where possible, support your answer with a direct quote from the context, "
     "followed by (Page X) or (Pages X–Y). Do not output any sentence without a citation.\n\n"
-    "Write in full sentences, not only bullet headings. Each sentence must state the requirement or criterion clearly and end with (Page X) or (Pages X–Y). "
-    "Bad: \"1. Types of licenses;\" Good: \"The guidelines describe the types of licenses available (Pages 1–2).\" "
-    "For definition questions, use this format when the context defines the term: Definition: \"quoted sentence from context\" (Page X).\n\n"
+    "Answer format and character: You are a concise regulatory assistant. For every answer: (1) Start with a short description (1–3 sentences) that summarize the answer. (2) Then list key points as bullet points. Each bullet is one clear point. Cite (Page X) or (Pages X–Y) in the description or at the end of each bullet. Use Markdown: **bold** for important terms or entities, - for bullet points. Use ## only when the answer has multiple distinct sections. Do not output raw HTML.\n\n"
     "Rules: Do not invent steps, numbers, or procedures. Do not mention entities or terms not in the context. Keep the answer concise: at most 5 points. "
     "Use the same language as the question (Arabic or English). Every sentence in your answer MUST end with (Page X) or (Pages X–Y). No exceptions."
 )
 SIMPLE_RAG_USER_TEMPLATE_DEFAULT = (
     "### CONTEXT\n\n{context}\n\n### QUESTION\n{question}\n\n"
+    "Format your answer as: short description then bullet points. Use Markdown (bullets with -, **bold** for key terms). "
     "Output only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
 )
-# Optional system line for fact/definition questions: extract exact phrase and cite (Page X); one sentence enough
+# Optional system line for fact/definition questions (5.1): extract only, do not summarize or expand
 SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION",
-    "For questions asking for a single fact, decree name, law, or definition: extract the exact phrase from the context and cite (Page X). One sentence is enough. Do not add extra explanation.",
+    "For questions asking for a single fact, decree name, law, or definition: extract the exact phrase from the context and cite (Page X). Base your answer only on the cited page(s); do not add content from outside the context. Extract only; do not summarize or expand. One sentence is enough. Do not add extra explanation.",
 )
 # Optional system line for criteria/requirements questions: require at least one direct quote
 SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS = os.getenv(
@@ -434,12 +478,17 @@ SIMPLE_RAG_SYSTEM_PROMPT_METADATA = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_METADATA",
     "For questions about law number, decree number, or date: extract the exact text from document headers or first articles and cite (Page X) or (Source: provided context).",
 )
+# Metadata answers (5.5): restrict to short factual extractions (decree number, date, version); max length
+METADATA_ANSWER_MAX_CHARS = int(os.getenv("METADATA_ANSWER_MAX_CHARS", "250"))
+# Entity containment (5.3, 7.3): require answer or cited chunk to contain query entity; 0 = disabled
+ENABLE_ENTITY_CONTAINMENT_CHECK = _env_bool("ENABLE_ENTITY_CONTAINMENT_CHECK", True)
 # Post-generation: override to NOT FOUND if answer embedding vs chunk embeddings max similarity below threshold
 ENABLE_POST_GEN_SIMILARITY_CHECK = _env_bool("ENABLE_POST_GEN_SIMILARITY_CHECK", False)
 POST_GEN_SIMILARITY_THRESHOLD = _env_float("POST_GEN_SIMILARITY_THRESHOLD", 0.5)
-# Answer language: for Arabic query, require answer to be primarily Arabic (script ratio)
+# Answer language: for Arabic query, require answer to be primarily Arabic (script ratio).
+# Relaxed (Phase 3.4): only flag when answer is mostly English; 0.15 = allow mixed, flag only clearly English answers.
 ENABLE_ANSWER_LANGUAGE_CHECK = _env_bool("ENABLE_ANSWER_LANGUAGE_CHECK", True)
-ANSWER_ARABIC_SCRIPT_RATIO_MIN = _env_float("ANSWER_ARABIC_SCRIPT_RATIO_MIN", 0.3)
+ANSWER_ARABIC_SCRIPT_RATIO_MIN = _env_float("ANSWER_ARABIC_SCRIPT_RATIO_MIN", 0.15)
 # When True, Arabic query with no Arabic chunk in top chunks: do not generate; return Arabic not_found
 ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER = _env_bool("ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER", False)
 # When True, answers with no (Page X)/(Pages X–Y) after fallback are replaced with not_found
@@ -482,6 +531,8 @@ SEMANTIC_GROUNDING_THRESHOLD_FACT_DEFINITION = _env_float("SEMANTIC_GROUNDING_TH
 SEMANTIC_GROUNDING_THRESHOLD_METADATA = _env_float("SEMANTIC_GROUNDING_THRESHOLD_METADATA", 0.4)
 SEMANTIC_GROUNDING_THRESHOLD_SYNTHESIS = _env_float("SEMANTIC_GROUNDING_THRESHOLD_SYNTHESIS", 0.45)
 SEMANTIC_GROUNDING_THRESHOLD_OTHER = _env_float("SEMANTIC_GROUNDING_THRESHOLD_OTHER", 0.45)
+# Optional: minimum combined confidence (similarity + grounding + citation) to return answer; 0 = disabled
+MIN_CONFIDENCE_FOR_ANSWER = _env_float("MIN_CONFIDENCE_FOR_ANSWER", 0.0)
 SIMPLE_RAG_UNCERTAINTY_PHRASE = os.getenv("SIMPLE_RAG_UNCERTAINTY_PHRASE", "")
 # Dynamic top_k: if top chunk similarity below threshold, re-fetch with k * multiplier
 DYNAMIC_TOP_K_ENABLED = _env_bool("DYNAMIC_TOP_K_ENABLED", False)
@@ -530,7 +581,7 @@ SIMPLE_RAG_STOP_PHRASES = [
     s.strip()
     for s in os.getenv(
         "SIMPLE_RAG_STOP_PHRASES",
-        "Human:|Assistant:|\n\nHuman:|\n\nAssistant:",
+        "Human:|Assistant:|\n\nHuman:|\n\nAssistant:|不断地|## 技术架构设计|知识库",
     ).split("|")
     if s.strip()
 ]

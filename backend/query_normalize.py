@@ -143,22 +143,40 @@ SHORT_QUERY_EXPANSIONS: dict[str, str] = {
 }
 
 
-def expand_short_query(query: str, max_words: int = 4) -> str:
+def _short_query_limits() -> tuple[int, int]:
+    """Return (max_words, max_chars) for short-query template expansion from config or defaults."""
+    try:
+        from config import SHORT_QUERY_MAX_WORDS, SHORT_QUERY_MAX_CHARS
+        return (SHORT_QUERY_MAX_WORDS, SHORT_QUERY_MAX_CHARS)
+    except ImportError:
+        return (5, 60)
+
+
+# Template expansion for very short queries (Phase 3.1): append regulatory phrase when no term matched
+SHORT_QUERY_TEMPLATE_SUFFIX = " requirements in Saudi Arabia SAMA banking regulations"
+
+
+def expand_short_query(query: str, max_words: int | None = None) -> str:
     """
-    If query has few words and matches a known regulatory term, append expansion phrase.
-    Used before embedding to improve retrieval for short queries.
+    If query has few words: (1) append term-based expansion when a known regulatory term matches;
+    (2) else if very short (words <= max_words, chars <= max_chars), append template phrase for retrieval.
+    Used before embedding to improve retrieval for short queries. Original query kept for display.
     """
     if not query or not query.strip():
         return query
     q = query.strip()
+    limit_words, limit_chars = _short_query_limits()
+    if max_words is not None:
+        limit_words = max_words
     words = len(q.split())
-    if words > max_words:
+    if words > limit_words or len(q) > limit_chars:
         return q
     q_lower = q.lower()
     for term, expansion in SHORT_QUERY_EXPANSIONS.items():
         if term in q_lower or term in q:
             return (q + " " + expansion).strip()
-    return q
+    # Very short query with no term match: append template for better embedding retrieval (3.1)
+    return (q + " " + SHORT_QUERY_TEMPLATE_SUFFIX.strip()).strip()
 
 
 def normalize_query_for_embedding(query: str, config: dict[str, Any] | None = None) -> str:

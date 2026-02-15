@@ -124,6 +124,35 @@ def _has_definitions_section(chunk: dict[str, Any]) -> bool:
     return any(m in text for m in _DEFINITIONS_MARKERS)
 
 
+def _extract_query_entity(query: str) -> str:
+    """Extract key entity from query for verbatim match (e.g. 'what is SAMA' -> 'sama')."""
+    if not query or not query.strip():
+        return ""
+    q = query.strip()
+    if "?" in q:
+        q = q.split("?")[0].strip()
+    q_lower = q.lower()
+    for prefix in ("what is ", "what is the ", "define ", "definition of ", "ما هو ", "ما هي ", "ما المقصود بـ ", "ما المعنى "):
+        if q_lower.startswith(prefix):
+            q = q[len(prefix):].strip()
+            break
+    return " ".join(q.split())[:200]
+
+
+def _entity_exact_match_boost(query: str, chunk: dict[str, Any], boost: float) -> float:
+    """Return boost if extracted query entity appears verbatim in chunk content."""
+    if not query or boost <= 0:
+        return 0.0
+    entity = _extract_query_entity(query)
+    if len(entity) < 3:
+        return 0.0
+    content = (chunk.get("content") or "").lower()
+    entity_lower = entity.lower()
+    if entity_lower in content:
+        return boost
+    return 0.0
+
+
 def _base_score(chunk: dict[str, Any]) -> float:
     """Existing similarity from retrieval (cosine_similarity or similarity)."""
     return float(
@@ -132,6 +161,24 @@ def _base_score(chunk: dict[str, Any]) -> float:
         or chunk.get("score")
         or 0.0
     )
+
+
+def _lexical_score(query: str, chunk: dict[str, Any]) -> float:
+    """
+    Keyword overlap score in [0, 1]: fraction of query tokens that appear in chunk content.
+    Used to combine with semantic (cross-encoder) score (Phase 6.1).
+    """
+    if not query or not query.strip():
+        return 0.0
+    q_tokens = _tokenize_for_title_match(query)
+    if not q_tokens:
+        return 0.0
+    content = (chunk.get("content") or "")[:3000].lower()
+    content_tokens = _tokenize_for_title_match(content)
+    if not content_tokens:
+        return 0.0
+    overlap = sum(1 for t in q_tokens if t in content_tokens)
+    return min(1.0, overlap / len(q_tokens)) if q_tokens else 0.0
 
 
 def rerank_chunks(
@@ -158,30 +205,44 @@ def rerank_chunks(
             ENABLE_RERANKER_DOMINANCE_BOOST,
             ENABLE_RERANKER_TITLE_BOOST,
             ENABLE_RERANKER_TITLE_EXACT_BOOST,
+            ENABLE_RERANKER_ENTITY_EXACT_BOOST,
             RERANKER_DEFINITIONS_BOOST,
             RERANKER_DOMINANT_DOC_BOOST,
             RERANKER_KEYWORD_DOCUMENT_BOOST,
             RERANKER_TITLE_KEYWORD_MIN_MATCH,
             RERANKER_TITLE_MATCH_BOOST,
             RERANKER_TITLE_EXACT_MATCH_BOOST,
+            RERANKER_ENTITY_EXACT_BOOST,
+            RERANKER_SEMANTIC_WEIGHT,
+            RERANKER_LEXICAL_WEIGHT,
+            RERANKER_SAME_DOC_BOOST_SYNTHESIS,
+            RERANKER_CROSS_DOC_PENALTY,
         )
         use_cross_encoder = use_cross_encoder and ENABLE_CROSS_ENCODER_RERANK
         definitions_boost = RERANKER_DEFINITIONS_BOOST
     except ImportError:
         ENABLE_RERANKER_TITLE_BOOST = False
         ENABLE_RERANKER_TITLE_EXACT_BOOST = False
+        ENABLE_RERANKER_ENTITY_EXACT_BOOST = False
         ENABLE_RERANKER_DOMINANCE_BOOST = False
         ENABLE_KEYWORD_DOCUMENT_BOOST = False
         RERANKER_TITLE_MATCH_BOOST = 0.1
         RERANKER_TITLE_EXACT_MATCH_BOOST = 0.2
+        RERANKER_ENTITY_EXACT_BOOST = 0.15
         RERANKER_TITLE_KEYWORD_MIN_MATCH = 1
         RERANKER_DOMINANT_DOC_BOOST = 0.05
         RERANKER_KEYWORD_DOCUMENT_BOOST = 0.12
+        RERANKER_SEMANTIC_WEIGHT = 0.7
+        RERANKER_LEXICAL_WEIGHT = 0.3
+        RERANKER_SAME_DOC_BOOST_SYNTHESIS = 0.08
+        RERANKER_CROSS_DOC_PENALTY = -0.01
 
     dominant_doc = _compute_dominant_document(chunks) if ENABLE_RERANKER_DOMINANCE_BOOST else None
     preferred = list(preferred_doc_names) if preferred_doc_names and ENABLE_KEYWORD_DOCUMENT_BOOST else []
+    lexical_scores = [_lexical_score(query, c) for c in chunks] if query else [0.0] * len(chunks)
+    synthesis_intent = intent == "synthesis"
 
-    def _add_boosts(chunk: dict[str, Any], base: float) -> float:
+    def _add_boosts(chunk: dict[str, Any], base: float, *, synthesis_intent: bool = False) -> float:
         s = base
         if _has_definitions_section(chunk):
             s += definitions_boost
@@ -191,8 +252,14 @@ def rerank_chunks(
             )
         if ENABLE_RERANKER_TITLE_EXACT_BOOST and query:
             s += _title_exact_match_boost(query, chunk, RERANKER_TITLE_EXACT_MATCH_BOOST)
+        if ENABLE_RERANKER_ENTITY_EXACT_BOOST and query:
+            s += _entity_exact_match_boost(query, chunk, RERANKER_ENTITY_EXACT_BOOST)
         if dominant_doc and (chunk.get("document_name") or "").strip() == dominant_doc:
             s += RERANKER_DOMINANT_DOC_BOOST
+            if synthesis_intent and RERANKER_SAME_DOC_BOOST_SYNTHESIS:
+                s += RERANKER_SAME_DOC_BOOST_SYNTHESIS
+        elif synthesis_intent and dominant_doc and RERANKER_CROSS_DOC_PENALTY != 0:
+            s += RERANKER_CROSS_DOC_PENALTY
         if preferred and _chunk_matches_preferred_docs(chunk, preferred):
             s += RERANKER_KEYWORD_DOCUMENT_BOOST
         return s
@@ -206,15 +273,23 @@ def rerank_chunks(
                 scores = scores.tolist()
             else:
                 scores = list(scores)
+            sem_scores = [float(scores[i]) if i < len(scores) else 0.0 for i in range(len(chunks))]
+            lo, hi = min(sem_scores), max(sem_scores)
+            span = (hi - lo) or 1.0
             for i, chunk in enumerate(chunks):
-                s = float(scores[i]) if i < len(scores) else 0.0
-                chunk["_rerank_score"] = _add_boosts(chunk, s)
+                sem_norm = (sem_scores[i] - lo) / span
+                combined = RERANKER_SEMANTIC_WEIGHT * sem_norm + RERANKER_LEXICAL_WEIGHT * (lexical_scores[i] if i < len(lexical_scores) else 0.0)
+                chunk["_rerank_score"] = _add_boosts(chunk, combined, synthesis_intent=synthesis_intent)
         except Exception:
-            for c in chunks:
-                c["_rerank_score"] = _add_boosts(c, _base_score(c))
+            for i, c in enumerate(chunks):
+                base = _base_score(c)
+                combined = RERANKER_SEMANTIC_WEIGHT * base + RERANKER_LEXICAL_WEIGHT * (lexical_scores[i] if i < len(lexical_scores) else 0.0)
+                c["_rerank_score"] = _add_boosts(c, combined, synthesis_intent=synthesis_intent)
     else:
-        for c in chunks:
-            c["_rerank_score"] = _add_boosts(c, _base_score(c))
+        for i, c in enumerate(chunks):
+            base = _base_score(c)
+            combined = RERANKER_SEMANTIC_WEIGHT * base + RERANKER_LEXICAL_WEIGHT * (lexical_scores[i] if i < len(lexical_scores) else 0.0)
+            c["_rerank_score"] = _add_boosts(c, combined, synthesis_intent=synthesis_intent)
     chunks_sorted = sorted(chunks, key=lambda c: -(c.get("_rerank_score") or 0))
     try:
         from config import ENABLE_MMR_DIVERSITY, ENABLE_MMR_DIVERSITY_SYNTHESIS, RERANKER_MMR_DIVERSITY_LAMBDA

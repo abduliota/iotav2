@@ -13,8 +13,12 @@ interface ChatInterfaceProps {
   onNewMessage: (message: Message) => void;
   canSend?: boolean;
   onLimitReached?: () => void;
-  /** Optional session/conversation id for conversational RAG memory (Phase 4). */
+  /** Backend session_id (serverSessionId on Chat). */
   sessionId?: string | null;
+  /** Backend user_id for query and feedback. */
+  userId?: string | null;
+  /** Called when backend returns a new session_id (e.g. first message in a new chat). */
+  onSessionId?: (sessionId: string) => void;
 }
 
 export type ConversationState = {
@@ -26,7 +30,7 @@ export type ConversationState = {
   last_query?: string;
 };
 
-export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitReached, sessionId }: ChatInterfaceProps) {
+export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitReached, sessionId, userId, onSessionId }: ChatInterfaceProps) {
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>({});
   const [isLoading, setIsLoading] = useState(false);
@@ -69,7 +73,11 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query: content, ...(sessionId && { session_id: sessionId }) }),
+        body: JSON.stringify({
+          query: content,
+          ...(userId && { user_id: userId }),
+          ...(sessionId && { session_id: sessionId }),
+        }),
       });
 
       if (!response.ok) {
@@ -93,7 +101,11 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         content: answer,
         references,
         timestamp: new Date(),
+        ...(data.message_id && { messageId: data.message_id }),
       };
+      if (data.session_id && !sessionId) {
+        onSessionId?.(data.session_id);
+      }
       setLocalMessages(prev => [...prev, assistantMessage]);
       skipSyncRef.current = true;
       onNewMessage(assistantMessage);
@@ -157,7 +169,13 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
             ) : (
               <div className="flex flex-col gap-3">
                 {allMessages.map((msg, index) => (
-                  <AnimatedMessage key={msg.id} message={msg} index={index} />
+                  <AnimatedMessage
+                    key={msg.id}
+                    message={msg}
+                    index={index}
+                    userId={userId ?? undefined}
+                    sessionId={sessionId ?? undefined}
+                  />
                 ))}
                 {isLoading && <AnimatedTypingIndicator />}
                 <div ref={messagesEndRef} />

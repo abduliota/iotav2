@@ -22,6 +22,26 @@ _HEADER_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Preamble indicators (5.4): chunk looks like document preamble rather than definitions
+_PREAMBLE_STARTS = ("royal decree", "pursuant to", "صادر بموجب", "مرسوم ملكي", "having considered")
+_DEFINITION_INDICATORS = ("definition", "definitions", "means", "is defined as", "تعريف", "تعريفات")
+
+
+def _is_preamble_like(content: str, check_len: int = 500) -> bool:
+    """
+    True if the start of content looks like document preamble (e.g. Royal Decree, Pursuant to)
+    and does not contain definition markers in the first check_len chars. Used to deprioritize
+    preamble chunks for fact_definition (5.4).
+    """
+    if not content or not content.strip():
+        return False
+    head = (content[:check_len] or "").strip().lower()
+    if not head:
+        return False
+    has_preamble_start = any(head.startswith(p) or p in head[:200] for p in _PREAMBLE_STARTS)
+    has_definition = any(m in head for m in _DEFINITION_INDICATORS)
+    return bool(has_preamble_start and not has_definition)
+
 
 def _is_header_like(sentence: str, min_content_words: int = 8) -> bool:
     """True if sentence looks like a title/header: short, all-caps, or matches header patterns."""
@@ -128,11 +148,19 @@ def build_extractive_answer(
     Build an answer by extracting the best span from the top chunk(s). No LLM.
     Returns "extracted span (Page X)." so citation is mandatory.
     For synthesis intent, returns empty string (caller should use generative path).
+    For fact_definition (5.4), deprioritize preamble-like chunks when a non-preamble chunk exists.
     """
     if not query or not chunks:
         return ""
     # Single-document default: use top max_chunks (1 for fact_definition/metadata)
-    use = chunks[:max_chunks]
+    use = chunks[: max_chunks * 2]
+    if intent == "fact_definition":
+        non_preamble = [c for c in use if not _is_preamble_like(c.get("content") or "")]
+        if non_preamble:
+            use = non_preamble[:max_chunks]
+    use = use[:max_chunks]
+    if not use:
+        use = chunks[:max_chunks]
     best_chunk = use[0]
     content = (best_chunk.get("content") or "").strip()
     if not content:

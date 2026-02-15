@@ -2,18 +2,25 @@
 
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Message } from '@/lib/types';
+import { normalizeMarkdownLists } from '@/lib/utils';
 import { References } from './References';
 import { Button } from '@/components/ui/button';
-import { Download, Copy } from 'lucide-react';
+import { Download, Copy, ThumbsUp, ThumbsDown } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: Message;
+  userId?: string;
+  sessionId?: string;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [showSources, setShowSources] = useState(false);
+  const [feedbackSent, setFeedbackSent] = useState<0 | 1 | null>(null);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -46,8 +53,17 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         ) : (
           <>
-            <div className="prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+            <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2" {...props} />,
+                  ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2" {...props} />,
+                  li: ({ node, ...props }) => <li className="my-0.5" {...props} />,
+                }}
+              >
+                {normalizeMarkdownLists(message.content)}
+              </ReactMarkdown>
             </div>
             {message.references && message.references.length > 0 ? (
               <>
@@ -86,7 +102,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 No sources used
               </div>
             )}
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="mt-2 flex flex-wrap gap-1.5 items-center">
               <Button
                 variant="ghost"
                 size="sm"
@@ -105,6 +121,76 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 <Copy className="h-3 w-3 mr-1" />
                 Copy
               </Button>
+              {canSendFeedback && (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="text-[11px] mr-1">Helpful?</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`text-[11px] h-7 px-2 ${feedbackSent === 1 ? 'text-green-600' : ''}`}
+                    disabled={feedbackSubmitting || feedbackSent !== null}
+                    onClick={async () => {
+                      setFeedbackSubmitting(true);
+                      try {
+                        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+                        await fetch(`${API_URL}/api/feedback`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            session_id: sessionId,
+                            user_id: userId,
+                            message_id: message.messageId,
+                            feedback: 1,
+                            comments: undefined,
+                          }),
+                        });
+                        setFeedbackSent(1);
+                      } catch (e) {
+                        console.error('Feedback failed:', e);
+                      } finally {
+                        setFeedbackSubmitting(false);
+                      }
+                    }}
+                  >
+                    <ThumbsUp className="h-3 w-3 mr-1" />
+                    Yes
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`text-[11px] h-7 px-2 ${feedbackSent === 0 ? 'text-red-600' : ''}`}
+                    disabled={feedbackSubmitting || feedbackSent !== null}
+                    onClick={async () => {
+                      setFeedbackSubmitting(true);
+                      try {
+                        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+                        await fetch(`${API_URL}/api/feedback`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            session_id: sessionId,
+                            user_id: userId,
+                            message_id: message.messageId,
+                            feedback: 0,
+                            comments: undefined,
+                          }),
+                        });
+                        setFeedbackSent(0);
+                      } catch (e) {
+                        console.error('Feedback failed:', e);
+                      } finally {
+                        setFeedbackSubmitting(false);
+                      }
+                    }}
+                  >
+                    <ThumbsDown className="h-3 w-3 mr-1" />
+                    No
+                  </Button>
+                  {feedbackSent !== null && (
+                    <span className="text-[11px] text-muted-foreground">Thanks</span>
+                  )}
+                </span>
+              )}
             </div>
           </>
         )}

@@ -8,9 +8,11 @@ import { Message } from '@/lib/types';
 interface AnimatedMessageProps {
   message: Message;
   index: number;
+  userId?: string;
+  sessionId?: string;
 }
 
-export function AnimatedMessage({ message, index }: AnimatedMessageProps) {
+export function AnimatedMessage({ message, index, userId, sessionId }: AnimatedMessageProps) {
   const isUser = message.role === 'user';
 
   return (
@@ -27,7 +29,7 @@ export function AnimatedMessage({ message, index }: AnimatedMessageProps) {
         delay: Math.min(index * 0.03, 0.3),
       }}
     >
-      <MessageBubble message={message} />
+      <MessageBubble message={message} userId={userId} sessionId={sessionId} />
     </motion.div>
   );
 }

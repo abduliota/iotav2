@@ -119,6 +119,24 @@ body {
   background: hsl(var(--muted-foreground) / 0.4);
 }
 
+/* Chat markdown: ensure lists show bullets/numbers */
+.chat-markdown ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.chat-markdown ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.chat-markdown li {
+  margin-top: 0.125rem;
+  margin-bottom: 0.125rem;
+}
+
 @layer base {
   * {
     @apply border-border;
