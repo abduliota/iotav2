@@ -1,0 +1,9 @@
+Context:
+
+{context}
+
+Question: {question}
+
+Include all relevant criteria, numbers, and details with page citations (Pages X–Y). Do not add anything that is not in the context above.
+
+Answer in clear sentences using only the context above:

@@ -1,0 +1,52 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Backend output and logs
+backend/output/
+backend/archive/
+backend/**/test_rag_results_*.log
+*.log
+
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.vercel
+frontend/.env*.local
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Data and assets
+azure_full.dump
+chunks.csv
+documents.csv
+Core/
+pdfs/
+
+# Misc
+*.tsbuildinfo
+next-env.d.ts

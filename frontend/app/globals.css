@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark, minimal scrollbar for prompt textarea */
+.custom-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.8) transparent;
+}
+
+.custom-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.8);
+  border-radius: 9999px;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+@layer base {
+  :root {
+    /* Regulation AI light mode - HSL for Tailwind */
+    --background: 210 20% 98%;
+    --surface: 0 0% 100%;
+    --border: 220 13% 91%;
+    --text-primary: 222 47% 11%;
+    --text-secondary: 220 9% 46%;
+    --accent: 243 75% 59%;
+    --success: 142 71% 45%;
+    --input-bg: 210 20% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --input: 220 13% 91%;
+    --ring: 243 75% 59%;
+    --radius: 0.75rem;
+    /* Sidebar - ChatGPT style */
+    --sidebar-bg: 220 14% 98%;
+    --sidebar-hover: 243 100% 97%;
+    --sidebar-active: 243 100% 94%;
+  }
+
+  .dark {
+    /* Regulation AI dark mode */
+    --background: 222 47% 7%;
+    --surface: 222 33% 11%;
+    --border: 215 28% 17%;
+    --text-primary: 220 13% 91%;
+    --text-secondary: 220 9% 65%;
+    --accent: 239 84% 67%;
+    --success: 142 71% 45%;
+    --input-bg: 222 47% 11%;
+    --foreground: 220 13% 91%;
+    --card: 222 33% 11%;
+    --card-foreground: 220 13% 91%;
+    --popover: 222 33% 11%;
+    --popover-foreground: 220 13% 91%;
+    --primary: 220 13% 91%;
+    --primary-foreground: 222 47% 7%;
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 220 13% 91%;
+    --muted: 215 28% 17%;
+    --muted-foreground: 220 9% 65%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --input: 215 28% 17%;
+    --ring: 239 84% 67%;
+    /* Sidebar dark */
+    --sidebar-bg: 222 47% 11%;
+    --sidebar-hover: 215 28% 17%;
+    --sidebar-active: 243 75% 25%;
+  }
+}
+
+/* Sidebar scroll - hidden until hover */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.15s ease;
+}
+.sidebar-scroll:hover {
+  scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
