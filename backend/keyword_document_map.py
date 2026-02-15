@@ -29,6 +29,11 @@ KEYWORD_TO_DOCUMENTS: dict[str, list[str]] = {
     "licensing": ["licensing", "license"],
     "sama": ["sama", "saudi arabian monetary"],
     "nora": ["nora", "national"],
+    # Law disambiguation: Banking Control Law vs Central Bank Law / Currency Law
+    "banking control law": ["banking control", "bcl", "1429", "نظام مراقبة البنوك"],
+    "bcl": ["banking control", "1429"],
+    "central bank law": ["central bank", "currency", "979"],
+    "currency law": ["979", "currency"],
 }
 
 

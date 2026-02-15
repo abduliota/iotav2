@@ -283,7 +283,7 @@ HYDE_PROMPT_PREFIX = os.getenv(
 # Blend weights for query vs hypothetical embedding (retrieval only)
 HYDE_QUERY_WEIGHT = _env_float("HYDE_QUERY_WEIGHT", 0.5)
 HYDE_HYPO_WEIGHT = _env_float("HYDE_HYPO_WEIGHT", 0.5)
-ENABLE_CROSS_ENCODER_RERANK = _env_bool("ENABLE_CROSS_ENCODER_RERANK", False)
+ENABLE_CROSS_ENCODER_RERANK = _env_bool("ENABLE_CROSS_ENCODER_RERANK", True)
 CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 # Boost for chunks in "Definitions" section (section_title or content contains "Definitions")
 RERANKER_DEFINITIONS_BOOST = _env_float("RERANKER_DEFINITIONS_BOOST", 0.15)
@@ -297,6 +297,9 @@ ENABLE_RERANKER_DOMINANCE_BOOST = _env_bool("ENABLE_RERANKER_DOMINANCE_BOOST", T
 # Keyword–document map: boost chunks from documents preferred for query keywords
 ENABLE_KEYWORD_DOCUMENT_BOOST = _env_bool("ENABLE_KEYWORD_DOCUMENT_BOOST", True)
 RERANKER_KEYWORD_DOCUMENT_BOOST = _env_float("RERANKER_KEYWORD_DOCUMENT_BOOST", 0.12)
+# MMR-style diversity: when selecting top_n, prefer chunks from different documents/sections
+ENABLE_MMR_DIVERSITY = _env_bool("ENABLE_MMR_DIVERSITY", False)
+RERANKER_MMR_DIVERSITY_LAMBDA = _env_float("RERANKER_MMR_DIVERSITY_LAMBDA", 0.7)
 ENABLE_SELF_RAG = _env_bool("ENABLE_SELF_RAG", True)
 SELF_RAG_MAX_RETRIES = int(os.getenv("SELF_RAG_MAX_RETRIES", "1"))
 SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
@@ -305,9 +308,11 @@ SELF_RAG_POOR_ANSWER_MIN_LEN = int(os.getenv("SELF_RAG_POOR_ANSWER_MIN_LEN", "30
 SELF_RAG_CITATION_PHRASES = ["page", "according to", "source", "sama", "nora"]
 
 # ---- Simple RAG (single-file pipeline): all settings from env/config, no hardcoding in code ----
-SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "8"))
+SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "5"))
 # Larger k for synthesis/criteria questions to pull deeper sections
-SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "14"))
+SIMPLE_RAG_TOP_K_SYNTHESIS = int(os.getenv("SIMPLE_RAG_TOP_K_SYNTHESIS", "7"))
+# Use extractive answer builder (copy from chunk) for fact_definition/metadata instead of LLM generation
+ENABLE_EXTRACTIVE_BUILDER = _env_bool("ENABLE_EXTRACTIVE_BUILDER", True)
 SIMPLE_RAG_MAX_CONTENT_CHARS = int(os.getenv("SIMPLE_RAG_MAX_CONTENT_CHARS", "1800"))
 SIMPLE_RAG_MAX_NEW_TOKENS = int(os.getenv("SIMPLE_RAG_MAX_NEW_TOKENS", "500"))
 SIMPLE_RAG_NOT_FOUND_MESSAGE = os.getenv(
@@ -425,6 +430,12 @@ ENABLE_ANSWER_LANGUAGE_CHECK = _env_bool("ENABLE_ANSWER_LANGUAGE_CHECK", True)
 ANSWER_ARABIC_SCRIPT_RATIO_MIN = _env_float("ANSWER_ARABIC_SCRIPT_RATIO_MIN", 0.3)
 # When True, Arabic query with no Arabic chunk in top chunks: do not generate; return Arabic not_found
 ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER = _env_bool("ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER", False)
+# When True, answers with no (Page X)/(Pages X–Y) after fallback are replaced with not_found
+SIMPLE_RAG_MANDATORY_CITATION_STRICT = _env_bool("SIMPLE_RAG_MANDATORY_CITATION_STRICT", False)
+# When True, answers with significant mixed Arabic+Latin script are rejected (not_found)
+ENABLE_STRICT_SINGLE_LANGUAGE = _env_bool("ENABLE_STRICT_SINGLE_LANGUAGE", False)
+# Log when some retrieved chunks were not cited in the answer (cross-doc / contamination signal)
+ENABLE_RETRIEVED_BUT_NOT_USED_LOG = _env_bool("ENABLE_RETRIEVED_BUT_NOT_USED_LOG", True)
 # When Arabic query and answer is English, translate answer to Arabic instead of returning not_found
 ENABLE_TRANSLATE_BACK = _env_bool("ENABLE_TRANSLATE_BACK", False)
 # Optional structured extraction template for synthesis (Article/Clause/Requirement)
@@ -449,8 +460,8 @@ SIMPLE_RAG_JURISDICTION_ANCHOR = os.getenv(
     "SIMPLE_RAG_JURISDICTION_ANCHOR",
     "Confirm jurisdiction is Saudi Arabia / SAMA when relevant.",
 )
-# Semantic grounding (answer vs chunk embeddings); when True, complement or replace literal grounding
-USE_SEMANTIC_GROUNDING = _env_bool("USE_SEMANTIC_GROUNDING", False)
+# Semantic grounding (answer vs chunk embeddings); when True, use as validator (reject/flag if score below threshold)
+USE_SEMANTIC_GROUNDING = _env_bool("USE_SEMANTIC_GROUNDING", True)
 GROUNDING_SOFT_FAIL_THRESHOLD = _env_float("GROUNDING_SOFT_FAIL_THRESHOLD", 0.5)
 GROUNDING_HARD_FAIL_THRESHOLD = _env_float("GROUNDING_HARD_FAIL_THRESHOLD", 0.35)
 GROUNDING_PARTIAL_BAND = _env_bool("GROUNDING_PARTIAL_BAND", True)

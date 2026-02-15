@@ -7,13 +7,17 @@ Core/06_generation_layer.md.
 
 from __future__ import annotations
 
-from typing import Optional
+import os
 import re
+from typing import Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from config import ALLOW_BASED_ON_CONTEXT_PROMPT_LINE, APP_BRAND_NAME, QWEN_MODEL
+
+# HF token for gated models (set HF_TOKEN or HUGGING_FACE_HUB_TOKEN)
+_HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 
 
 _tokenizer: Optional[AutoTokenizer] = None
@@ -21,7 +25,7 @@ _model: Optional[AutoModelForCausalLM] = None
 
 
 def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
-    """Lazy-load Qwen 7B Instruct model and tokenizer in 4-bit on single GPU."""
+    """Lazy-load Qwen 7B Instruct model and tokenizer in 4-bit on single GPU (persistent)."""
     global _tokenizer, _model
     if _tokenizer is not None and _model is not None:
         return _tokenizer, _model
@@ -29,6 +33,7 @@ def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
     tokenizer = AutoTokenizer.from_pretrained(
         QWEN_MODEL,
         trust_remote_code=True,
+        token=_HF_TOKEN,
     )
 
     # 4-bit quantization so 7B fits in ~6GB VRAM (e.g. RTX 4050 Laptop)
@@ -44,6 +49,7 @@ def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
         quantization_config=bnb_config,
         torch_dtype=torch.float16,
         device_map="auto",
+        token=_HF_TOKEN,
     )
 
     _tokenizer = tokenizer

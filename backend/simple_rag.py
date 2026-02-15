@@ -27,9 +27,12 @@ from config import (
     DYNAMIC_TOP_K_ENABLED,
     DYNAMIC_TOP_K_MULTIPLIER,
     DYNAMIC_TOP_K_SIMILARITY_THRESHOLD,
+    ENABLE_EXTRACTIVE_BUILDER,
     ENABLE_ANSWER_LANGUAGE_CHECK,
     ENABLE_ARABIC_DUAL_RETRIEVE,
     ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER,
+    ENABLE_RETRIEVED_BUT_NOT_USED_LOG,
+    ENABLE_STRICT_SINGLE_LANGUAGE,
     ENABLE_POST_GEN_SIMILARITY_CHECK,
     ENABLE_TRANSLATE_BACK,
     ENABLE_RERANKING,
@@ -46,6 +49,7 @@ from config import (
     SIMPLE_RAG_CONFABULATION_BLOCKLIST,
     SIMPLE_RAG_ECHO_PHRASES,
     SIMPLE_RAG_FILLER_PHRASES,
+    MIN_CHUNK_SIMILARITY,
     SIMPLE_RAG_LOG_PATH,
     SIMPLE_RAG_MAX_CONTENT_CHARS,
     SIMPLE_RAG_MAX_NEW_TOKENS,
@@ -56,6 +60,7 @@ from config import (
     SIMPLE_RAG_PROMPTS_JSON_PATH,
     SIMPLE_RAG_SCOPE_KEYWORDS,
     SIMPLE_RAG_STOP_PHRASES,
+    SIMPLE_RAG_MANDATORY_CITATION_STRICT,
     SIMPLE_RAG_STRICT_CITATION,
     SIMPLE_RAG_SYSTEM_PROMPT_DEFAULT,
     SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX,
@@ -77,6 +82,7 @@ from embeddings import embed_chunk, embed_query
 from query_normalize import normalize_query_for_embedding
 from query_multilingual import merge_chunks_rrf, translate_arabic_to_english
 from grounding import grounding_decision
+from extractive_builder import build_extractive_answer
 from ontology import get_documents_for_keywords
 from rerank import rerank_chunks
 from translate import translate_to_arabic
@@ -432,6 +438,19 @@ def _synthesis_title_match_confidence(chunks: list[dict[str, Any]], query: str) 
     return matches / len(top) if top else 0.0
 
 
+def _is_mixed_language(text: str, min_ratio: float = 0.15) -> bool:
+    """True if text has both significant Arabic script and significant Latin script (e.g. > 15% each)."""
+    if not text or not text.strip():
+        return False
+    chars = [c for c in text if not c.isspace()]
+    if len(chars) < 10:
+        return False
+    arabic = sum(1 for c in chars if "\u0600" <= c <= "\u06FF")
+    latin = sum(1 for c in chars if ord(c) < 128 and c.isalpha())
+    n = len(chars)
+    return (arabic / n >= min_ratio) and (latin / n >= min_ratio)
+
+
 def _get_arabic_instruction_prefix() -> str:
     """Instruction to prepend when the question is in Arabic so the model answers in Arabic."""
     return "أجب بالعربية فقط. لا تستخدم الإنجليزية.\n\nAnswer only in Arabic. Do not use English.\n\n"
@@ -542,6 +561,23 @@ def _context_contains_header_or_metadata(context: str, term: str) -> bool:
             continue
         if any(phrase in seg_lower for phrase in _HEADER_METADATA_PHRASES):
             return True
+    return False
+
+
+def _chunks_title_match_term(chunks: list[dict[str, Any]], term: str) -> bool:
+    """True if any chunk's section_title contains the term (disable definition_guard override when title matches)."""
+    if not chunks or not term or not term.strip():
+        return False
+    term_lower = term.strip().lower()
+    for c in chunks:
+        title = (c.get("section_title") or "").lower()
+        if term_lower in title:
+            return True
+        if len(term_lower) > 3 and len(title) > 10:
+            term_tokens = set(re.findall(r"[a-z0-9\u0600-\u06ff]{2,}", term_lower))
+            title_tokens = set(re.findall(r"[a-z0-9\u0600-\u06ff]{2,}", title))
+            if term_tokens and term_tokens <= title_tokens:
+                return True
     return False
 
 
@@ -840,22 +876,10 @@ def generate_answer_simple(
         max_new_tokens=SIMPLE_RAG_MAX_NEW_TOKENS,
         do_sample=False,
         repetition_penalty=1.2,
+        temperature=0.0,
     )
-    # Stop at conversation-turn markers to avoid training-data leakage (post-process truncation is the main fix)
-    stop_strings = [p for p in SIMPLE_RAG_STOP_PHRASES if p and "\n" not in p] or None
     with torch.no_grad():
-        if stop_strings:
-            try:
-                outputs = model.generate(
-                    **inputs,
-                    generation_config=gen_config,
-                    stop_strings=stop_strings,
-                    tokenizer=tokenizer,
-                )
-            except Exception:
-                outputs = model.generate(**inputs, generation_config=gen_config)
-        else:
-            outputs = model.generate(**inputs, generation_config=gen_config)
+        outputs = model.generate(**inputs, generation_config=gen_config)
 
     # Decode only the newly generated tokens (exclude the prompt)
     generated_ids = outputs[0][input_length:]
@@ -952,12 +976,34 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             "sources": [],
         }
 
+    # Similarity gate: do not call generation if top retrieval similarity below threshold
+    top_similarity = _top_retrieval_similarity(chunks)
+    if MIN_CHUNK_SIMILARITY > 0 and top_similarity < MIN_CHUNK_SIMILARITY:
+        log.info("similarity_gate: top similarity %.3f < MIN_CHUNK_SIMILARITY %.3f; returning not_found", top_similarity, MIN_CHUNK_SIMILARITY)
+        return {
+            "answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE,
+            "sources": [{"document_name": c.get("document_name"), "page_start": c.get("page_start"), "page_end": c.get("page_end"), "snippet": (c.get("content") or "")[:280]} for c in chunks[:5]],
+        }
+
+    # Optional: filter chunks by MIN_CHUNK_SIMILARITY before build_context
+    if MIN_CHUNK_SIMILARITY > 0:
+        chunks = [c for c in chunks if (float(c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0) >= MIN_CHUNK_SIMILARITY)]
+        if not chunks:
+            log.info("similarity_gate: no chunks above MIN_CHUNK_SIMILARITY; returning not_found")
+            return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
+
     context_text = build_context(chunks)
-    try:
-        answer = generate_answer_simple(context_text, q, intent)
-    except Exception as e:
-        log.exception("generate_answer_simple failed: %s", e)
-        raise
+    if ENABLE_EXTRACTIVE_BUILDER and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
+        answer = build_extractive_answer(q, chunks, intent, max_chunks=1)
+        if not answer or not answer.strip():
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+        log.debug("extractive_builder used for intent=%s", intent)
+    else:
+        try:
+            answer = generate_answer_simple(context_text, q, intent)
+        except Exception as e:
+            log.exception("generate_answer_simple failed: %s", e)
+            raise
     raw_preview = (answer or "")[:300] + ("..." if len(answer or "") > 300 else "")
     log.debug("raw_answer (preview): %s", raw_preview)
 
@@ -989,6 +1035,13 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
+    if SIMPLE_RAG_MANDATORY_CITATION_STRICT and not _is_not_found_answer(answer):
+        if "(Page " not in answer and "(Pages " not in answer:
+            log.info("citation_validator: mandatory citation strict; no (Page X) present; overriding to not_found")
+            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+    if ENABLE_STRICT_SINGLE_LANGUAGE and not _is_not_found_answer(answer) and _is_mixed_language(answer):
+        log.info("language_validator: mixed language detected; overriding to not_found")
+        answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
 
     # Citation validation (run before guard): check cited pages exist in chunks
     citation_all_valid, citation_any_valid = _validate_citations(answer, chunks)
@@ -1013,7 +1066,7 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 context_text, term
             ) and not _context_contains_header_or_metadata(context_text, term) and not _context_contains_acronym_expansion(
                 context_text, term
-            ):
+            ) and not _chunks_title_match_term(chunks, term):
                 if has_citation_and_similarity or skip_not_found_if_high_retrieval:
                     log.info("definition_guard: skipping override (valid citation+similarity or high retrieval confidence)")
                 else:
@@ -1104,6 +1157,17 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     log.debug("final_answer (preview): %s", (answer or "")[:300])
     cited_sentences = _extract_cited_sentences(answer) if answer else []
     cited_articles = _extract_article_numbers_from_answer(answer) if answer else []
+    if ENABLE_RETRIEVED_BUT_NOT_USED_LOG and chunks and answer:
+        cited_pages_set = set(_extract_page_numbers_from_citations(answer))
+        cited_idx = set()
+        for i, c in enumerate(chunks):
+            start = int(c.get("page_start") or 0)
+            end = int(c.get("page_end") or 0)
+            if any(start <= p <= end for p in cited_pages_set):
+                cited_idx.add(i)
+        not_used = len(chunks) - len(cited_idx)
+        if not_used > 0:
+            log.info("retrieved_but_not_used: %d of %d chunks not cited in answer", not_used, len(chunks))
     snippet_limit = SNIPPET_CHAR_LIMIT
     sources = [
         {

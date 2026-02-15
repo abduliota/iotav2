@@ -45,6 +45,37 @@ def _compute_dominant_document(chunks: list[dict[str, Any]]) -> str | None:
     return best_name
 
 
+def _apply_mmr_diversity(
+    chunks_sorted: list[dict[str, Any]], top_n: int, lambda_param: float
+) -> list[dict[str, Any]]:
+    """Select top_n chunks with document diversity: prefer chunks from documents not yet in selection."""
+    if not chunks_sorted or top_n <= 0:
+        return chunks_sorted[:top_n] if top_n else chunks_sorted
+    selected: list[dict[str, Any]] = []
+    selected_docs: set[str] = set()
+    used_indices: set[int] = set()
+    for _ in range(min(top_n, len(chunks_sorted))):
+        best_idx: int | None = None
+        best_val = -1e9
+        for i, c in enumerate(chunks_sorted):
+            if i in used_indices:
+                continue
+            score = float(c.get("_rerank_score") or 0)
+            doc = (c.get("document_name") or "").strip()
+            diversity_bonus = 1.0 if doc not in selected_docs else 0.0
+            val = lambda_param * score + (1.0 - lambda_param) * diversity_bonus
+            if val > best_val:
+                best_val = val
+                best_idx = i
+        if best_idx is None:
+            break
+        c = chunks_sorted[best_idx]
+        selected.append(c)
+        selected_docs.add((c.get("document_name") or "").strip())
+        used_indices.add(best_idx)
+    return selected
+
+
 def _chunk_matches_preferred_docs(chunk: dict[str, Any], preferred: list[str]) -> bool:
     """True if chunk's document_name contains any preferred substring (case-insensitive)."""
     if not preferred:
@@ -155,8 +186,14 @@ def rerank_chunks(
         for c in chunks:
             c["_rerank_score"] = _add_boosts(c, _base_score(c))
     chunks_sorted = sorted(chunks, key=lambda c: -(c.get("_rerank_score") or 0))
-    for c in chunks_sorted:
-        c.pop("_rerank_score", None)
+    try:
+        from config import ENABLE_MMR_DIVERSITY, RERANKER_MMR_DIVERSITY_LAMBDA
+        if ENABLE_MMR_DIVERSITY and top_n is not None and len(chunks_sorted) > 1:
+            chunks_sorted = _apply_mmr_diversity(chunks_sorted, top_n, RERANKER_MMR_DIVERSITY_LAMBDA)
+    except ImportError:
+        pass
     if top_n is not None:
         chunks_sorted = chunks_sorted[:top_n]
+    for c in chunks_sorted:
+        c.pop("_rerank_score", None)
     return chunks_sorted
