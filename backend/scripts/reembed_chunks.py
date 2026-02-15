@@ -19,12 +19,28 @@ from embeddings import embed_chunk
 from supabase_client import get_client
 
 
+PAGE_SIZE = 1000  # Supabase default max; fetch in pages to get all rows
+
+
 def main() -> None:
     client = get_client()
-    # Select only id and the text column used for embedding (content)
-    # Use "content" for sama_nora_chunks; if your table uses "text", change below
-    result = client.table("sama_nora_chunks").select("id, content").execute()
-    rows = result.data or []
+    # Fetch all rows in pages (Supabase returns max 1000 per request by default)
+    rows: list[dict] = []
+    start = 0
+    while True:
+        end = start + PAGE_SIZE - 1
+        result = (
+            client.table("sama_nora_chunks")
+            .select("id, content")
+            .range(start, end)
+            .execute()
+        )
+        page = result.data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+        print(f"Fetched {len(rows)} rows so far...")
     total = len(rows)
     if total == 0:
         print("No chunks found in sama_nora_chunks.")
