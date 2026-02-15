@@ -571,6 +571,51 @@ def _context_contains_acronym_expansion(context: str, term: str) -> bool:
     return False
 
 
+def _build_acronym_definition_from_context(
+    context_text: str, chunks: list[dict[str, Any]], term: str
+) -> str | None:
+    """
+    When context contains the expansion of a known acronym but no explicit 'X is ...' sentence,
+    build a short definition with citation. Used to fix 'what is sama' when the model returns not_found.
+    Returns None if we cannot build a definition.
+    """
+    if not context_text or not chunks or not term or not term.strip():
+        return None
+    term_lower = term.strip().lower()
+    context_lower = context_text.lower()
+    try:
+        from query_normalize import ACRONYM_EXPANSIONS, LEGAL_TERM_MAP
+        expansion = ACRONYM_EXPANSIONS.get(term_lower) or LEGAL_TERM_MAP.get(term_lower)
+    except ImportError:
+        return None
+    if not expansion:
+        return None
+    # Prefer "agency" when context uses it (SAMA docs say "Agency"), else "authority"
+    exp_display = expansion.strip()
+    if term_lower == "sama" and "agency" in context_lower:
+        exp_display = "Saudi Arabian Monetary Agency"
+    elif term_lower == "sama":
+        exp_display = "Saudi Arabian Monetary Authority"
+    else:
+        exp_display = exp_display.title()
+    # Find first chunk that contains the expansion (or monetary+agency/authority for sama/nora)
+    for c in chunks:
+        content = (c.get("content") or "").lower()
+        if expansion.lower() in content:
+            break
+        if term_lower in ("sama", "nora") and "monetary" in content and ("agency" in content or "authority" in content):
+            break
+    else:
+        return None
+    page = c.get("page_start") or c.get("page_end") or 1
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+    acronym_upper = term.strip().upper() if len(term.strip()) <= 6 else term.strip()
+    return f"{acronym_upper} refers to the {exp_display} (Page {page})."
+
+
 def _get_blocklisted_confabulation_terms(answer: str, context: str) -> list[str]:
     """Return list of blocklist terms that appear in answer but not in context."""
     if not answer or not context:
@@ -974,6 +1019,15 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 else:
                     log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
                     answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
+
+    # Post-fill: when model returned not_found but context has acronym expansion (e.g. "what is sama"), fill from context
+    if intent == QUERY_INTENT_FACT_DEFINITION and _is_not_found_answer(answer):
+        is_def, term = _is_definition_style_query(q)
+        if is_def and term and _context_contains_acronym_expansion(context_text, term):
+            filled = _build_acronym_definition_from_context(context_text, chunks, term)
+            if filled:
+                answer = filled
+                log.info("definition_post_fill: replaced not_found with acronym definition for '%s'", term)
 
     _grounding_confidence: float = 1.0
     # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
