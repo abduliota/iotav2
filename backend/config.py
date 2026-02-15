@@ -287,6 +287,16 @@ ENABLE_CROSS_ENCODER_RERANK = _env_bool("ENABLE_CROSS_ENCODER_RERANK", False)
 CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 # Boost for chunks in "Definitions" section (section_title or content contains "Definitions")
 RERANKER_DEFINITIONS_BOOST = _env_float("RERANKER_DEFINITIONS_BOOST", 0.15)
+# Title match: boost when query keywords appear in section_title (min keywords to trigger, boost amount)
+RERANKER_TITLE_MATCH_BOOST = _env_float("RERANKER_TITLE_MATCH_BOOST", 0.1)
+RERANKER_TITLE_KEYWORD_MIN_MATCH = int(os.getenv("RERANKER_TITLE_KEYWORD_MIN_MATCH", "1"))
+# Document dominance: boost chunks from the document that appears most often in results
+RERANKER_DOMINANT_DOC_BOOST = _env_float("RERANKER_DOMINANT_DOC_BOOST", 0.05)
+ENABLE_RERANKER_TITLE_BOOST = _env_bool("ENABLE_RERANKER_TITLE_BOOST", True)
+ENABLE_RERANKER_DOMINANCE_BOOST = _env_bool("ENABLE_RERANKER_DOMINANCE_BOOST", True)
+# Keyword–document map: boost chunks from documents preferred for query keywords
+ENABLE_KEYWORD_DOCUMENT_BOOST = _env_bool("ENABLE_KEYWORD_DOCUMENT_BOOST", True)
+RERANKER_KEYWORD_DOCUMENT_BOOST = _env_float("RERANKER_KEYWORD_DOCUMENT_BOOST", 0.12)
 ENABLE_SELF_RAG = _env_bool("ENABLE_SELF_RAG", True)
 SELF_RAG_MAX_RETRIES = int(os.getenv("SELF_RAG_MAX_RETRIES", "1"))
 SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
@@ -315,6 +325,8 @@ SIMPLE_RAG_LOG_PATH = os.getenv(
     str(SIMPLE_RAG_LOG_DIR / "simple_rag.log"),
 )
 SIMPLE_RAG_STRICT_CITATION = _env_bool("SIMPLE_RAG_STRICT_CITATION", True)
+# Synthesis: if title match confidence >= this, do not override to not_found for verbatim failure (0 = disabled)
+SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD = _env_float("SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD", 0.0)
 SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE = os.getenv(
     "SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE",
     "I only answer questions about SAMA and NORA documents. I don't have information on that.",
@@ -411,12 +423,26 @@ POST_GEN_SIMILARITY_THRESHOLD = _env_float("POST_GEN_SIMILARITY_THRESHOLD", 0.5)
 # Answer language: for Arabic query, require answer to be primarily Arabic (script ratio)
 ENABLE_ANSWER_LANGUAGE_CHECK = _env_bool("ENABLE_ANSWER_LANGUAGE_CHECK", True)
 ANSWER_ARABIC_SCRIPT_RATIO_MIN = _env_float("ANSWER_ARABIC_SCRIPT_RATIO_MIN", 0.3)
+# When True, Arabic query with no Arabic chunk in top chunks: do not generate; return Arabic not_found
+ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER = _env_bool("ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER", False)
 # When Arabic query and answer is English, translate answer to Arabic instead of returning not_found
 ENABLE_TRANSLATE_BACK = _env_bool("ENABLE_TRANSLATE_BACK", False)
 # Optional structured extraction template for synthesis (Article/Clause/Requirement)
 SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE = os.getenv(
     "SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE",
     "Where applicable use: Article: … Clause: … Requirement: …",
+)
+# Law-summary template for synthesis: Law/Regulation, Article, Requirement; bullet format with (Page X) per bullet
+SIMPLE_RAG_SYSTEM_PROMPT_LAW_SUMMARY = os.getenv(
+    "SIMPLE_RAG_SYSTEM_PROMPT_LAW_SUMMARY",
+    "For regulatory summaries use structure: Law/Regulation: … Article: … Requirement: … "
+    "Use bullet format for criteria/requirements: • [Requirement] (Page X). Do not give generic banking explanations; only quote or restate from context.",
+)
+# Generic phrases that indicate ungrounded explanation; if in answer but not in context, treat as confabulation
+SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST = _load_list_from_file_or_env(
+    "SIMPLE_RAG_GENERIC_PHRASES_FILE",
+    "SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST",
+    ["banks typically", "generally speaking", "in most jurisdictions", "it is common for banks", "usually banks"],
 )
 # Jurisdiction anchoring in prompt
 SIMPLE_RAG_JURISDICTION_ANCHOR = os.getenv(
@@ -446,6 +472,12 @@ SIMPLE_RAG_CLARIFICATION_MESSAGE = os.getenv(
 )
 # Return confidence score in answer_query result (0-1)
 RETURN_CONFIDENCE_SCORE = _env_bool("RETURN_CONFIDENCE_SCORE", False)
+# Do not override to not_found if top retrieval similarity >= this (0 = disabled)
+NOT_FOUND_RETRIEVAL_CONFIDENCE_THRESHOLD = _env_float("NOT_FOUND_RETRIEVAL_CONFIDENCE_THRESHOLD", 0.0)
+# If answer has valid citation and cited chunk similarity >= this, do not override by guard
+CITATION_HIGH_SIMILARITY_THRESHOLD = _env_float("CITATION_HIGH_SIMILARITY_THRESHOLD", 0.6)
+# Return citation_valid in answer_query result when True
+RETURN_CITATION_VALID = _env_bool("RETURN_CITATION_VALID", False)
 # Arabic queries: reinforce no translation beyond context (env-overridable)
 SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX = os.getenv(
     "SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX",

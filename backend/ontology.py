@@ -33,3 +33,12 @@ def get_parent_doc_type(doc_type: str) -> str | None:
     """Return parent in hierarchy (e.g. Regulation -> Law)."""
     canonical = normalize_doc_type(doc_type)
     return DOC_TYPE_HIERARCHY.get(canonical or "", None)
+
+
+def get_documents_for_keywords(query: str) -> list[str]:
+    """
+    Return preferred document name substrings for the query (keyword → SAMA EN document map).
+    Used in retrieval/rerank to boost chunks from relevant documents.
+    """
+    from keyword_document_map import get_documents_for_query
+    return get_documents_for_query(query)

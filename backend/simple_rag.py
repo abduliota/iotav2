@@ -29,10 +29,14 @@ from config import (
     DYNAMIC_TOP_K_SIMILARITY_THRESHOLD,
     ENABLE_ANSWER_LANGUAGE_CHECK,
     ENABLE_ARABIC_DUAL_RETRIEVE,
+    ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER,
     ENABLE_POST_GEN_SIMILARITY_CHECK,
     ENABLE_TRANSLATE_BACK,
     ENABLE_RERANKING,
+    CITATION_HIGH_SIMILARITY_THRESHOLD,
+    NOT_FOUND_RETRIEVAL_CONFIDENCE_THRESHOLD,
     POST_GEN_SIMILARITY_THRESHOLD,
+    RETURN_CITATION_VALID,
     RETURN_CONFIDENCE_SCORE,
     RRF_K,
     SIMPLE_RAG_CLARIFICATION_MESSAGE,
@@ -59,17 +63,21 @@ from config import (
     SIMPLE_RAG_SYSTEM_PROMPT_METADATA,
     SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS,
     SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE,
+    SIMPLE_RAG_SYSTEM_PROMPT_LAW_SUMMARY,
+    SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST,
     SIMPLE_RAG_JURISDICTION_ANCHOR,
     SIMPLE_RAG_TEST_QUESTIONS_JSON_PATH,
     SIMPLE_RAG_TOP_K,
     SIMPLE_RAG_TOP_K_SYNTHESIS,
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
+    SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD,
     TOP_K_DEFINITION,
 )
 from embeddings import embed_chunk, embed_query
 from query_normalize import normalize_query_for_embedding
 from query_multilingual import merge_chunks_rrf, translate_arabic_to_english
 from grounding import grounding_decision
+from ontology import get_documents_for_keywords
 from rerank import rerank_chunks
 from translate import translate_to_arabic
 from supabase_client import get_client
@@ -355,6 +363,14 @@ def _classify_query_intent(query: str) -> str:
     return QUERY_INTENT_OTHER
 
 
+def _in_scope_keyword_match_count(query: str) -> int:
+    """Number of scope keywords that appear in the query (for confidence logging)."""
+    if not query or not query.strip():
+        return 0
+    q = query.strip().lower()
+    return sum(1 for kw in SIMPLE_RAG_SCOPE_KEYWORDS if kw and kw in q)
+
+
 def _is_in_scope(query: str) -> bool:
     """True if the question is about SAMA/NORA/banking/regulations; False for off-topic (e.g. US president)."""
     if not query or not query.strip():
@@ -376,6 +392,44 @@ def _is_arabic_query(text: str) -> bool:
     if not text or not text.strip():
         return False
     return any("\u0600" <= c <= "\u06FF" for c in text)
+
+
+def _chunk_has_arabic_content(chunk: dict[str, Any]) -> bool:
+    """True if chunk content or section_title contains Arabic script."""
+    text = (chunk.get("content") or "") + " " + (chunk.get("section_title") or "")
+    return any("\u0600" <= c <= "\u06FF" for c in text)
+
+
+def _reorder_arabic_first(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For Arabic queries: put chunks with Arabic content first, preserving relative order within each group."""
+    with_ar: list[dict[str, Any]] = []
+    without_ar: list[dict[str, Any]] = []
+    for c in chunks:
+        if _chunk_has_arabic_content(c):
+            with_ar.append(c)
+        else:
+            without_ar.append(c)
+    return with_ar + without_ar
+
+
+def _synthesis_title_match_confidence(chunks: list[dict[str, Any]], query: str) -> float:
+    """
+    Return 0–1 confidence: fraction of top chunks whose section_title contains at least one query token.
+    Used to relax synthesis verbatim override when retrieval strongly matches by title.
+    """
+    if not chunks or not query or not query.strip():
+        return 0.0
+    query_tokens = set(re.findall(r"[a-z0-9\u0600-\u06ff]{2,}", query.lower()))
+    if not query_tokens:
+        return 0.0
+    top = chunks[:5]
+    matches = 0
+    for c in top:
+        title = (c.get("section_title") or "").lower()
+        title_tokens = set(re.findall(r"[a-z0-9\u0600-\u06ff]{2,}", title))
+        if query_tokens & title_tokens:
+            matches += 1
+    return matches / len(top) if top else 0.0
 
 
 def _get_arabic_instruction_prefix() -> str:
@@ -491,6 +545,32 @@ def _context_contains_header_or_metadata(context: str, term: str) -> bool:
     return False
 
 
+def _context_contains_acronym_expansion(context: str, term: str) -> bool:
+    """True if term is a known acronym and its expansion (e.g. 'saudi arabian monetary authority') appears in context. Fixes 'what is sama' when context has full form but not 'SAMA is ...'."""
+    if not context or not term or not term.strip():
+        return False
+    term_lower = term.strip().lower()
+    context_lower = context.lower()
+    try:
+        from query_normalize import ACRONYM_EXPANSIONS, LEGAL_TERM_MAP
+        expansion = ACRONYM_EXPANSIONS.get(term_lower) or LEGAL_TERM_MAP.get(term_lower)
+        if not expansion:
+            return False
+        exp_lower = expansion.lower()
+        if exp_lower in context_lower:
+            return True
+        exp_words = exp_lower.split()
+        if len(exp_words) >= 2 and " ".join(exp_words[:3]) in context_lower:
+            return True
+        if len(exp_words) >= 2 and " ".join(exp_words[:2]) in context_lower:
+            return True
+        if term_lower in ("sama", "nora") and "monetary" in context_lower and ("agency" in context_lower or "authority" in context_lower):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
 def _get_blocklisted_confabulation_terms(answer: str, context: str) -> list[str]:
     """Return list of blocklist terms that appear in answer but not in context."""
     if not answer or not context:
@@ -504,6 +584,31 @@ def _get_blocklisted_confabulation_terms(answer: str, context: str) -> list[str]
         if term in answer_lower and term not in context_lower:
             found.append(term)
     return found
+
+
+def _get_generic_blocklist_phrases(answer: str, context: str) -> list[str]:
+    """Return generic-phrase blocklist entries that appear in answer but not in context."""
+    if not answer or not context or not SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST:
+        return []
+    answer_lower = answer.lower()
+    context_lower = context.lower()
+    found: list[str] = []
+    for phrase in SIMPLE_RAG_GENERIC_PHRASES_BLOCKLIST:
+        if not phrase:
+            continue
+        if phrase.lower() in answer_lower and phrase.lower() not in context_lower:
+            found.append(phrase)
+    return found
+
+
+def _extract_article_numbers_from_answer(answer: str) -> list[str]:
+    """Extract 'Article X' or 'المادة X' style references from answer for cited_articles."""
+    if not answer or not answer.strip():
+        return []
+    articles: list[str] = []
+    for m in re.finditer(r"(?i)(?:article|المادة)\s*[:\s]*(\d+(?:\s*[–\-]\s*\d+)?)", answer):
+        articles.append(m.group(1).strip())
+    return list(dict.fromkeys(articles))
 
 
 def _contains_blocklisted_confabulation(answer: str, context: str) -> bool:
@@ -531,6 +636,74 @@ def _remove_sentences_containing_terms(text: str, terms: list[str], min_kept_len
     if len(result) < min_kept_len:
         return None
     return result
+
+
+def _extract_page_numbers_from_citations(answer: str) -> list[int]:
+    """Extract all page numbers mentioned in (Page X) or (Pages X–Y) citations."""
+    if not answer or not answer.strip():
+        return []
+    pages: list[int] = []
+    for m in re.finditer(r"\(Page\s+(\d+)\)", answer, re.IGNORECASE):
+        pages.append(int(m.group(1)))
+    for m in re.finditer(r"\(Pages\s+(\d+)\s*[–\-]\s*(\d+)\)", answer, re.IGNORECASE):
+        start, end = int(m.group(1)), int(m.group(2))
+        for p in range(start, end + 1):
+            pages.append(p)
+    return pages
+
+
+def _validate_citations(answer: str, chunks: list[dict[str, Any]]) -> tuple[bool, bool]:
+    """Check that cited page numbers exist in chunks. Returns (all_valid, any_valid)."""
+    cited_pages = _extract_page_numbers_from_citations(answer)
+    if not cited_pages:
+        return False, False
+    chunk_ranges = [
+        (int(c.get("page_start") or 0), int(c.get("page_end") or 0)) for c in chunks
+    ]
+    any_ok = False
+    all_ok = True
+    for p in cited_pages:
+        found = any(s <= p <= e for s, e in chunk_ranges)
+        if found:
+            any_ok = True
+        else:
+            all_ok = False
+    return all_ok, any_ok
+
+
+def _has_valid_citation_and_high_similarity(
+    answer: str, chunks: list[dict[str, Any]], threshold: float
+) -> bool:
+    """True if answer has at least one (Page X) citation, that page is in a chunk, and that chunk has similarity >= threshold."""
+    if threshold <= 0 or not chunks:
+        return False
+    cited_pages = _extract_page_numbers_from_citations(answer)
+    if not cited_pages:
+        return False
+    for i, c in enumerate(chunks):
+        start = int(c.get("page_start") or 0)
+        end = int(c.get("page_end") or 0)
+        sim = float(
+            c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0.0
+        )
+        if sim < threshold:
+            continue
+        for p in cited_pages:
+            if start <= p <= end:
+                return True
+    return False
+
+
+def _top_retrieval_similarity(chunks: list[dict[str, Any]]) -> float:
+    """Return the best similarity score among chunks (from retrieval or rerank)."""
+    if not chunks:
+        return 0.0
+    best = 0.0
+    for c in chunks:
+        s = float(c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0.0)
+        if s > best:
+            best = s
+    return best
 
 
 def _extract_cited_sentences(answer: str) -> list[dict[str, str]]:
@@ -603,6 +776,8 @@ def generate_answer_simple(
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_SYNTHESIS
     if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_STRUCTURED_EXTRACTION_TEMPLATE
+    if intent == QUERY_INTENT_SYNTHESIS and SIMPLE_RAG_SYSTEM_PROMPT_LAW_SUMMARY:
+        system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_LAW_SUMMARY
     if SIMPLE_RAG_JURISDICTION_ANCHOR:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_JURISDICTION_ANCHOR
     if _is_arabic_query(user_query) and SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX:
@@ -662,7 +837,8 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
     q = user_query.strip()
     intent = _classify_query_intent(q)
     in_scope = _is_in_scope(q)
-    log.info("intent=%s in_scope=%s query=%s", intent, in_scope, q[:200] if q else "")
+    scope_keyword_matches = _in_scope_keyword_match_count(q)
+    log.info("intent=%s in_scope=%s scope_keyword_matches=%s query=%s", intent, in_scope, scope_keyword_matches, q[:200] if q else "")
     if category:
         log.debug("query [%s] intent=%s: %s", category, intent, q)
     else:
@@ -703,16 +879,23 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 chunks = merge_chunks_rrf([chunks, chunks_en], rrf_k=RRF_K, top_n=k)
             except Exception as e:
                 log.debug("dual_retrieve (EN) failed, using single: %s", e)
+    preferred_doc_names = get_documents_for_keywords(q)
     if ENABLE_RERANKING and chunks:
-        chunks = rerank_chunks(q, chunks, top_n=k)
+        chunks = rerank_chunks(q, chunks, top_n=k, preferred_doc_names=preferred_doc_names)
+    if _is_arabic_query(q) and chunks:
+        chunks = _reorder_arabic_first(chunks)
     log.debug("retrieval: %d chunks", len(chunks))
     if chunks:
         top_docs = [(r.get("document_name"), r.get("page_start"), r.get("page_end")) for r in chunks[:3]]
         log.debug("top chunks: %s", top_docs)
+    has_arabic_in_top = True
     if _is_arabic_query(q) and chunks:
-        has_arabic = any((c.get("content") or "").strip().startswith(("\u0600", "\u0601")) for c in chunks[:5])
-        if not has_arabic:
+        has_arabic_in_top = any(_chunk_has_arabic_content(c) for c in chunks[:5])
+        if not has_arabic_in_top:
             log.info("retrieval_language_consistency: Arabic query but no Arabic chunk in top; continuing with EN context")
+    if ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER and _is_arabic_query(q) and chunks and not has_arabic_in_top:
+        log.info("strict_retrieval_language: Arabic query, no Arabic chunk in top; returning Arabic not_found")
+        return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC, "sources": []}
 
     if not chunks:
         if AMBIGUITY_DETECTION_ENABLED and len(q.split()) <= AMBIGUITY_MAX_WORDS:
@@ -739,7 +922,12 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
     if _is_arabic_query(q) and ENABLE_ANSWER_LANGUAGE_CHECK and not _is_not_found_answer(answer):
         if not _is_answer_primarily_arabic(answer, ANSWER_ARABIC_SCRIPT_RATIO_MIN):
-            if ENABLE_TRANSLATE_BACK:
+            # Translate back only when source answer is grounded and has citation (do not translate ungrounded)
+            source_grounded = (
+                "(Page " in answer or "(Pages " in answer or "(Source:" in answer
+                or _is_answer_grounded_in_context(answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE)
+            )
+            if ENABLE_TRANSLATE_BACK and source_grounded:
                 translated = translate_to_arabic(answer)
                 if translated:
                     answer = translated
@@ -747,12 +935,30 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
                 else:
                     answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
             else:
-                log.info("answer_language_check: Arabic query but answer not primarily Arabic; overriding to Arabic not_found")
+                if not source_grounded:
+                    log.info("answer_language_check: not translating ungrounded answer to Arabic; overriding to not_found")
+                else:
+                    log.info("answer_language_check: Arabic query but answer not primarily Arabic; overriding to Arabic not_found")
                 answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC
 
     answer, citation_applied = _ensure_citation_fallback(answer, SIMPLE_RAG_NOT_FOUND_MESSAGE, intent)
     if citation_applied:
         log.info("citation_fallback_applied (no Page/Pages in answer)")
+
+    # Citation validation (run before guard): check cited pages exist in chunks
+    citation_all_valid, citation_any_valid = _validate_citations(answer, chunks)
+    citation_valid = citation_any_valid
+    top_sim = _top_retrieval_similarity(chunks)
+    skip_not_found_if_high_retrieval = (
+        NOT_FOUND_RETRIEVAL_CONFIDENCE_THRESHOLD > 0
+        and top_sim >= NOT_FOUND_RETRIEVAL_CONFIDENCE_THRESHOLD
+    )
+    has_citation_and_similarity = _has_valid_citation_and_high_similarity(
+        answer, chunks, CITATION_HIGH_SIMILARITY_THRESHOLD
+    )
+    synthesis_title_confidence = (
+        _synthesis_title_match_confidence(chunks, q) if intent == QUERY_INTENT_SYNTHESIS else 0.0
+    )
 
     # Definition guard: for "what is X?" / "define X?" / "purpose of X?" if context does not explicitly define or state purpose, force not found. Skip for metadata intent.
     if intent != QUERY_INTENT_METADATA:
@@ -760,9 +966,14 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         if is_def and term and not _is_not_found_answer(answer):
             if not _context_explicitly_defines_term(context_text, term) and not _context_contains_purpose_for_term(
                 context_text, term
-            ) and not _context_contains_header_or_metadata(context_text, term):
-                log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
-                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
+            ) and not _context_contains_header_or_metadata(context_text, term) and not _context_contains_acronym_expansion(
+                context_text, term
+            ):
+                if has_citation_and_similarity or skip_not_found_if_high_retrieval:
+                    log.info("definition_guard: skipping override (valid citation+similarity or high retrieval confidence)")
+                else:
+                    log.info("definition_guard: context does not explicitly define '%s'; overriding to not_found", term)
+                    answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
 
     _grounding_confidence: float = 1.0
     # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
@@ -770,31 +981,47 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         decision, sem_score, soft_msg = grounding_decision(answer, context_text, chunks, intent)
         _grounding_confidence = sem_score
         if decision == "hard_fail":
-            log.info("semantic_grounding: hard_fail (score=%.3f); overriding to not_found", sem_score)
-            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
-            _grounding_confidence = 0.0
+            if has_citation_and_similarity or skip_not_found_if_high_retrieval:
+                log.info("semantic_grounding: hard_fail but skipping override (citation+similarity or high retrieval)")
+            else:
+                log.info("semantic_grounding: hard_fail (score=%.3f); overriding to not_found", sem_score)
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+                _grounding_confidence = 0.0
         elif decision == "soft_fail" and soft_msg and "(Source:" not in answer:
             answer = answer.rstrip().rstrip(".") + soft_msg
     # Literal grounding: fact_definition/metadata use relaxed; synthesis and others use strict
     if not _is_not_found_answer(answer):
         if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
             if not _is_answer_loosely_grounded(answer, context_text):
-                log.info("grounding_check: answer not loosely grounded (fact_definition/metadata); overriding to not_found")
-                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+                if has_citation_and_similarity or skip_not_found_if_high_retrieval:
+                    log.info("grounding_check: skipping override (citation+similarity or high retrieval)")
+                else:
+                    log.info("grounding_check: answer not loosely grounded (fact_definition/metadata); overriding to not_found")
+                    answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
         else:
             if not _is_answer_grounded_in_context(
                 answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE
             ):
-                log.info("grounding_check: answer not supported by context; overriding to not_found")
-                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+                if has_citation_and_similarity or skip_not_found_if_high_retrieval:
+                    log.info("grounding_check: skipping override (citation+similarity or high retrieval)")
+                else:
+                    log.info("grounding_check: answer not supported by context; overriding to not_found")
+                    answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
     # Synthesis verbatim (Option A): override to not_found only when main grounding failed; if grounded but no verbatim, keep answer and ensure source
     if intent == QUERY_INTENT_SYNTHESIS and not _is_not_found_answer(answer) and not _answer_has_verbatim_support(answer, context_text):
         if _is_answer_grounded_in_context(answer, context_text, SIMPLE_RAG_NOT_FOUND_MESSAGE):
             if "(Page " not in answer and "(Pages " not in answer and "(Source:" not in answer:
                 answer = answer.rstrip(".").rstrip() + " (Source: provided context)."
         else:
-            log.info("grounding_check: synthesis answer not grounded; overriding to not_found")
-            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
+            if (
+                has_citation_and_similarity
+                or skip_not_found_if_high_retrieval
+                or (SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD > 0 and synthesis_title_confidence >= SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD)
+            ):
+                log.info("grounding_check: synthesis not grounded but skipping override (citation+similarity, high retrieval, or title match)")
+            else:
+                log.info("grounding_check: synthesis answer not grounded; overriding to not_found")
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
 
     # Confabulation: blocklist terms in answer but not in context — remove offending sentences; replace whole answer only if nothing left
     offending = _get_blocklisted_confabulation_terms(answer, context_text)
@@ -805,11 +1032,24 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
             answer = cleaned
             log.debug("kept answer after removing sentences containing blocklist terms")
         else:
-            answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
-            log.info("answer empty or too short after removing confabulation; replacing with not_found")
+            if has_citation_and_similarity or skip_not_found_if_high_retrieval:
+                log.info("confabulation: would replace with not_found but skipping (citation+similarity or high retrieval)")
+            else:
+                answer = SIMPLE_RAG_NOT_FOUND_MESSAGE
+                log.info("answer empty or too short after removing confabulation; replacing with not_found")
+
+    # Generic phrases blocklist: remove ungrounded generic banking explanations
+    generic_offending = _get_generic_blocklist_phrases(answer, context_text)
+    if generic_offending and not _is_not_found_answer(answer):
+        log.info("generic blocklist detected: %s", ", ".join(generic_offending))
+        cleaned = _remove_sentences_containing_terms(answer, generic_offending, min_kept_len=40)
+        if cleaned is not None and len(cleaned) >= 40:
+            answer = cleaned
+            log.debug("kept answer after removing sentences containing generic phrases")
 
     log.debug("final_answer (preview): %s", (answer or "")[:300])
     cited_sentences = _extract_cited_sentences(answer) if answer else []
+    cited_articles = _extract_article_numbers_from_answer(answer) if answer else []
     snippet_limit = SNIPPET_CHAR_LIMIT
     sources = [
         {
@@ -821,9 +1061,11 @@ def answer_query(user_query: str, top_k: int | None = None, category: str | None
         }
         for row in chunks
     ]
-    out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences}
+    out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
     if RETURN_CONFIDENCE_SCORE:
         out["confidence"] = 0.0 if _is_not_found_answer(answer) else _grounding_confidence
+    if RETURN_CITATION_VALID:
+        out["citation_valid"] = citation_valid
     return out
 
 

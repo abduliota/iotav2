@@ -1,11 +1,56 @@
 """Rerank retrieved chunks with cross-encoder and optional Definitions section boost."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 _cross_encoder_model: Any = None
 
 _DEFINITIONS_MARKERS = ("definitions", "definition", "تعريف", "تعريفات")
+
+
+def _tokenize_for_title_match(text: str) -> set[str]:
+    """Lowercase tokens (min 2 chars) for keyword overlap."""
+    tokens = re.findall(r"[a-z0-9\u0600-\u06ff]{2,}", (text or "").lower())
+    return set(tokens)
+
+
+def _title_match_boost(query: str, chunk: dict[str, Any], min_match: int, boost: float) -> float:
+    """Return boost if at least min_match query tokens appear in chunk's section_title."""
+    if min_match < 1 or boost <= 0:
+        return 0.0
+    title = (chunk.get("section_title") or "").lower()
+    if not title:
+        return 0.0
+    title_tokens = _tokenize_for_title_match(title)
+    query_tokens = _tokenize_for_title_match(query or "")
+    overlap = sum(1 for t in query_tokens if t in title_tokens)
+    return boost if overlap >= min_match else 0.0
+
+
+def _compute_dominant_document(chunks: list[dict[str, Any]]) -> str | None:
+    """Return the document_name that appears most often in chunks (by chunk count)."""
+    if not chunks:
+        return None
+    counts: dict[str, int] = {}
+    for c in chunks:
+        name = (c.get("document_name") or "").strip() or "(unknown)"
+        counts[name] = counts.get(name, 0) + 1
+    best_name: str | None = None
+    best_count = 0
+    for name, n in counts.items():
+        if n > best_count:
+            best_count = n
+            best_name = name
+    return best_name
+
+
+def _chunk_matches_preferred_docs(chunk: dict[str, Any], preferred: list[str]) -> bool:
+    """True if chunk's document_name contains any preferred substring (case-insensitive)."""
+    if not preferred:
+        return False
+    doc_name = (chunk.get("document_name") or "").lower()
+    return any(hint.lower() in doc_name for hint in preferred)
 
 
 def _get_cross_encoder():
@@ -42,10 +87,11 @@ def rerank_chunks(
     use_cross_encoder: bool = True,
     definitions_boost: float = 0.15,
     top_n: int | None = None,
+    preferred_doc_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Rerank chunks: optionally by cross-encoder (query, content), then add Definitions
-    section boost. If cross-encoder disabled, use existing similarity + boost.
+    section boost, title match boost, document dominance boost, and keyword-document boost.
     Returns list sorted by score descending; if top_n set, return only first top_n.
     """
     if not chunks:
@@ -53,13 +99,43 @@ def rerank_chunks(
     try:
         from config import (
             ENABLE_CROSS_ENCODER_RERANK,
+            ENABLE_KEYWORD_DOCUMENT_BOOST,
+            ENABLE_RERANKER_DOMINANCE_BOOST,
+            ENABLE_RERANKER_TITLE_BOOST,
             RERANKER_DEFINITIONS_BOOST,
+            RERANKER_DOMINANT_DOC_BOOST,
+            RERANKER_KEYWORD_DOCUMENT_BOOST,
+            RERANKER_TITLE_KEYWORD_MIN_MATCH,
+            RERANKER_TITLE_MATCH_BOOST,
         )
         use_cross_encoder = use_cross_encoder and ENABLE_CROSS_ENCODER_RERANK
         definitions_boost = RERANKER_DEFINITIONS_BOOST
     except ImportError:
-        pass
-    boost = definitions_boost
+        ENABLE_RERANKER_TITLE_BOOST = False
+        ENABLE_RERANKER_DOMINANCE_BOOST = False
+        ENABLE_KEYWORD_DOCUMENT_BOOST = False
+        RERANKER_TITLE_MATCH_BOOST = 0.1
+        RERANKER_TITLE_KEYWORD_MIN_MATCH = 1
+        RERANKER_DOMINANT_DOC_BOOST = 0.05
+        RERANKER_KEYWORD_DOCUMENT_BOOST = 0.12
+
+    dominant_doc = _compute_dominant_document(chunks) if ENABLE_RERANKER_DOMINANCE_BOOST else None
+    preferred = list(preferred_doc_names) if preferred_doc_names and ENABLE_KEYWORD_DOCUMENT_BOOST else []
+
+    def _add_boosts(chunk: dict[str, Any], base: float) -> float:
+        s = base
+        if _has_definitions_section(chunk):
+            s += definitions_boost
+        if ENABLE_RERANKER_TITLE_BOOST and query:
+            s += _title_match_boost(
+                query, chunk, RERANKER_TITLE_KEYWORD_MIN_MATCH, RERANKER_TITLE_MATCH_BOOST
+            )
+        if dominant_doc and (chunk.get("document_name") or "").strip() == dominant_doc:
+            s += RERANKER_DOMINANT_DOC_BOOST
+        if preferred and _chunk_matches_preferred_docs(chunk, preferred):
+            s += RERANKER_KEYWORD_DOCUMENT_BOOST
+        return s
+
     if use_cross_encoder and query:
         try:
             model = _get_cross_encoder()
@@ -71,15 +147,13 @@ def rerank_chunks(
                 scores = list(scores)
             for i, chunk in enumerate(chunks):
                 s = float(scores[i]) if i < len(scores) else 0.0
-                if _has_definitions_section(chunk):
-                    s += boost
-                chunk["_rerank_score"] = s
+                chunk["_rerank_score"] = _add_boosts(chunk, s)
         except Exception:
             for c in chunks:
-                c["_rerank_score"] = _base_score(c) + (boost if _has_definitions_section(c) else 0)
+                c["_rerank_score"] = _add_boosts(c, _base_score(c))
     else:
         for c in chunks:
-            c["_rerank_score"] = _base_score(c) + (boost if _has_definitions_section(c) else 0)
+            c["_rerank_score"] = _add_boosts(c, _base_score(c))
     chunks_sorted = sorted(chunks, key=lambda c: -(c.get("_rerank_score") or 0))
     for c in chunks_sorted:
         c.pop("_rerank_score", None)
