@@ -15,4 +15,4 @@ torchaudio==2.1.0
 accelerate>=0.27.0
 bitsandbytes==0.41.3
 sentence-transformers>=2.2.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0
