@@ -1,6 +1,6 @@
 <div align="center">
 
-# 💡 IOTA v2
+# 💡 IOTA Techbologies : Regulation AI
 
 **SAMA/NORA Compliance Assistant**
 
