@@ -10,9 +10,17 @@ interface AnimatedMessageProps {
   index: number;
   userId?: string;
   sessionId?: string;
+  /** True when this is the latest assistant message in the list. */
+  isLatestAssistant?: boolean;
 }
 
-export function AnimatedMessage({ message, index, userId, sessionId }: AnimatedMessageProps) {
+export function AnimatedMessage({
+  message,
+  index,
+  userId,
+  sessionId,
+  isLatestAssistant,
+}: AnimatedMessageProps) {
   const isUser = message.role === 'user';
 
   return (
@@ -29,7 +37,12 @@ export function AnimatedMessage({ message, index, userId, sessionId }: AnimatedM
         delay: Math.min(index * 0.03, 0.3),
       }}
     >
-      <MessageBubble message={message} userId={userId} sessionId={sessionId} />
+      <MessageBubble
+        message={message}
+        userId={userId}
+        sessionId={sessionId}
+        isLatestAssistant={isLatestAssistant}
+      />
     </motion.div>
   );
 }

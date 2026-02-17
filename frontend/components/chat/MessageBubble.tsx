@@ -13,9 +13,16 @@ interface MessageBubbleProps {
   message: Message;
   userId?: string;
   sessionId?: string;
+  /** True when this is the latest assistant message; only this one uses heavy markdown. */
+  isLatestAssistant?: boolean;
 }
 
-function MessageBubbleComponent({ message, userId, sessionId }: MessageBubbleProps) {
+function MessageBubbleComponent({
+  message,
+  userId,
+  sessionId,
+  isLatestAssistant,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [showSources, setShowSources] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
@@ -23,12 +30,23 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
   const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
   const isStreamingAssistant =
     !isUser && (!message.references || message.references.length === 0);
+  // Only the latest assistant message should use full markdown rendering;
+  // older answers stay in the lightweight plain-text view to avoid heavy
+  // re-renders blocking the main thread.
+  const shouldUseMarkdown = !isUser && Boolean(isLatestAssistant);
   const [enableMarkdown, setEnableMarkdown] = useState(false);
 
   // Defer heavy markdown rendering slightly so the UI can show the full
   // plain-text answer immediately without feeling frozen on large responses.
   useEffect(() => {
-    // While streaming, always use the lightweight view.
+    // For user messages or non-latest assistant messages, never enable markdown:
+    // keep them in the lightweight view to avoid expensive ReactMarkdown work.
+    if (!shouldUseMarkdown) {
+      setEnableMarkdown(false);
+      return;
+    }
+
+    // While streaming the latest assistant answer, always use the lightweight view.
     if (isStreamingAssistant) {
       setEnableMarkdown(false);
       return;
@@ -45,7 +63,7 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
         window.clearTimeout(timeoutId);
       }
     };
-  }, [isStreamingAssistant, message.content]);
+  }, [isStreamingAssistant, shouldUseMarkdown, message.content]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -78,7 +96,7 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
           </div>
         ) : (
           <>
-            {isStreamingAssistant || !enableMarkdown ? (
+            {isStreamingAssistant || !enableMarkdown || !shouldUseMarkdown ? (
               // Lightweight view while streaming and immediately after completion
               // (before markdown is enabled) to avoid heavy renders on large answers.
               <div className="whitespace-pre-wrap break-words font-mono">

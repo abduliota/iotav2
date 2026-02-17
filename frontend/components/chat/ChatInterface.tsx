@@ -285,15 +285,29 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
               </div>
             ) : (
               <div className="flex flex-col gap-3">
-                {allMessages.map((msg, index) => (
-                  <AnimatedMessage
-                    key={msg.id}
-                    message={msg}
-                    index={index}
-                    userId={userId ?? undefined}
-                    sessionId={sessionId ?? undefined}
-                  />
-                ))}
+                {allMessages.map((msg, index) => {
+                  // Latest assistant message in the list – the only one that
+                  // should use heavy markdown rendering to keep INP low.
+                  const isLatestAssistant =
+                    msg.role === 'assistant' &&
+                    // Compare to the last assistant index in the array
+                    index ===
+                      [...allMessages].reduceRight(
+                        (found, m, i) => (found === -1 && m.role === 'assistant' ? i : found),
+                        -1
+                      );
+
+                  return (
+                    <AnimatedMessage
+                      key={msg.id}
+                      message={msg}
+                      index={index}
+                      userId={userId ?? undefined}
+                      sessionId={sessionId ?? undefined}
+                      isLatestAssistant={isLatestAssistant}
+                    />
+                  );
+                })}
                 {isLoading && <AnimatedTypingIndicator />}
                 <div ref={messagesEndRef} />
               </div>
