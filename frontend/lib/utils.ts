@@ -27,39 +27,12 @@ export function getSnippetHighlightRanges(
   snippet: string,
   answerText: string
 ): { start: number; end: number }[] {
+  // Previous implementation performed an O(n^2) search over snippet and
+  // answerText, which could easily block the main thread for seconds on
+  // large snippets. For responsiveness, highlighting is disabled and the
+  // caller falls back to rendering the snippet as plain text.
   if (!snippet?.trim() || !answerText?.trim()) return []
-
-  // Protect against very large texts causing long main-thread blocks.
-  if (
-    snippet.length > SNIPPET_HIGHLIGHT_MAX_SNIPPET_LEN ||
-    answerText.length > SNIPPET_HIGHLIGHT_MAX_ANSWER_LEN
-  ) {
-    return []
-  }
-
-  const answerNorm = answerText.replace(/\s+/g, " ").trim().toLowerCase()
-  const ranges: { start: number; end: number }[] = []
-  for (let start = 0; start < snippet.length; start++) {
-    let bestEnd = start
-    for (let end = start + SNIPPET_HIGHLIGHT_MIN_LEN; end <= snippet.length; end++) {
-      const sub = snippet.slice(start, end).replace(/\s+/g, " ").trim()
-      if (sub.length < SNIPPET_HIGHLIGHT_MIN_LEN) continue
-      if (answerNorm.includes(sub.toLowerCase())) bestEnd = end
-    }
-    if (bestEnd > start) ranges.push({ start, end: bestEnd })
-  }
-  if (ranges.length === 0) return []
-  ranges.sort((a, b) => a.start - b.start)
-  const merged: { start: number; end: number }[] = [ranges[0]]
-  for (let i = 1; i < ranges.length; i++) {
-    const last = merged[merged.length - 1]
-    if (ranges[i].start <= last.end) {
-      last.end = Math.max(last.end, ranges[i].end)
-    } else {
-      merged.push(ranges[i])
-    }
-  }
-  return merged
+  return []
 }
 
 export type SnippetHighlightSegment = { type: "text" | "highlight"; content: string }

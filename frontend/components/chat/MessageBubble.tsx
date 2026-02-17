@@ -17,7 +17,7 @@ interface MessageBubbleProps {
   isLatestAssistant?: boolean;
 }
 
-const MAX_MARKDOWN_LENGTH = 4000;
+const MAX_MARKDOWN_LENGTH = 1000;
 
 function MessageBubbleComponent({
   message,
@@ -93,7 +93,7 @@ function MessageBubbleComponent({
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
       <div
-        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed transition-all duration-150 border border-border cyber-chamfer-sm px-3 py-2.5 ${
+        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed border border-border cyber-chamfer-sm px-3 py-2.5 ${
           isUser
             ? 'bg-muted text-foreground border-accent/50'
             : 'bg-card text-foreground'
