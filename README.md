@@ -664,6 +664,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 **Built with ❤️ by IOTA Technologies**
 
-[⭐ Star us on GitHub](https://github.com/your-org/Iotav2) | [📖 Documentation](./docs) | [🐛 Report Bug](https://github.com/your-org/Iotav2/issues)
+[⭐ Star us on GitHub](https://github.com/your-org/Iotav2) | [🐛 Report Bug](https://github.com/your-org/Iotav2/issues)
 
 </div>
