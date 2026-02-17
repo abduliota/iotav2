@@ -18,11 +18,10 @@ except ImportError:
     pass
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from simple_rag import answer_query, answer_query_streaming
+from simple_rag import answer_query
 from users_sessions import (
     create_user,
     create_session,
@@ -126,55 +125,6 @@ def api_query(body: QueryBody):
         if created_session:
             out["session_id_created"] = True
         return out
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/query/stream")
-def api_query_stream(body: QueryBody):
-    """
-    Stream answer text in chunks for better frontend responsiveness.
-
-    NOTE: This currently streams only the answer text; sources and IDs
-    are still available on the backend (and persisted) but not included
-    in the streaming payload.
-    """
-    try:
-        user_id = body.user_id
-        session_id = body.session_id
-        created_user = False
-        created_session = False
-
-        if not user_id:
-            user_id = create_user()
-            created_user = True
-        if not session_id:
-            session_id = create_session(user_id)
-            created_session = True
-
-        full_answer, sources, chunks = answer_query_streaming(body.query, session_id=session_id)
-
-        # Persist the full exchange as usual
-        message_id = insert_session_message(
-            session_id=session_id,
-            user_id=user_id,
-            user_message=body.query,
-            assistant_message=full_answer,
-        )
-
-        def iter_chunks():
-            # Optionally, we could prefix metadata or delimit chunks; for now
-            # we stream raw text slices.
-            for chunk in chunks:
-                if chunk:
-                    yield chunk
-
-        headers = {
-            "X-Session-Id": session_id or "",
-            "X-User-Id": user_id or "",
-            "X-Message-Id": message_id,
-        }
-        return StreamingResponse(iter_chunks(), media_type="text/plain", headers=headers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

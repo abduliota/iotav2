@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Reference } from '@/lib/types';
 import { getSnippetHighlightSegments } from '@/lib/utils';
 
@@ -15,10 +15,7 @@ export function References({ references, answerText }: ReferencesProps) {
   if (!references || references.length === 0) return null;
 
   const selected = references[selectedIndex];
-  const segments = useMemo(
-    () => getSnippetHighlightSegments(selected.snippet, answerText ?? ''),
-    [selected.snippet, answerText]
-  );
+  const segments = getSnippetHighlightSegments(selected.snippet, answerText ?? '');
 
   return (
     <div className="mt-2">

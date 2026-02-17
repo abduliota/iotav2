@@ -64,117 +64,52 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
 
     setIsLoading(true);
 
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    const streamingEnabled = process.env.NEXT_PUBLIC_STREAMING_ENABLED === 'true';
+    let references: Reference[] = [];
 
     try {
-      if (streamingEnabled && typeof ReadableStream !== 'undefined') {
-        const response = await fetch(`${API_URL}/api/query/stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            query: content,
-            ...(userId && { user_id: userId }),
-            ...(sessionId && { session_id: sessionId }),
-          }),
-        });
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/api/query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: content,
+          ...(userId && { user_id: userId }),
+          ...(sessionId && { session_id: sessionId }),
+        }),
+      });
 
-        if (!response.ok || !response.body) {
-          throw new Error('Streaming API request failed');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        const assistantId = (Date.now() + 1).toString();
-        const createdAt = new Date();
-
-        // Create a local assistant message that will be updated as chunks arrive
-        setLocalMessages(prev => [
-          ...prev,
-          {
-            id: assistantId,
-            role: 'assistant',
-            content: '',
-            timestamp: createdAt,
-          },
-        ]);
-
-        let accumulated = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          const chunk = decoder.decode(value);
-          if (!chunk) continue;
-          accumulated += chunk;
-          const contentNow = accumulated;
-
-          setLocalMessages(prev =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: contentNow }
-                : m
-            )
-          );
-        }
-
-        // Persist final assistant message to parent storage
-        const finalAssistant: Message = {
-          id: assistantId,
-          role: 'assistant',
-          content: accumulated,
-          timestamp: createdAt,
-        };
-        skipSyncRef.current = true;
-        onNewMessage(finalAssistant);
-        setIsLoading(false);
-      } else {
-        // Fallback to existing non-streaming JSON API
-        const response = await fetch(`${API_URL}/api/query`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            query: content,
-            ...(userId && { user_id: userId }),
-            ...(sessionId && { session_id: sessionId }),
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error('API request failed');
-        }
-
-        const data = await response.json();
-        const answer: string = data.answer ?? '';
-        const rawSources: Array<{ document_name?: string; page_start?: number; page_end?: number; snippet?: string; similarity?: number }> = data.sources ?? [];
-
-        const references: Reference[] = rawSources.map((s, i) => ({
-          id: `${s.document_name ?? ''}-${s.page_start ?? 0}-${s.page_end ?? 0}-${i}`,
-          source: s.document_name ?? 'Source',
-          page: typeof s.page_start === 'number' ? s.page_start : 0,
-          snippet: s.snippet ?? '',
-        }));
-
-        const assistantMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: answer,
-          references,
-          timestamp: new Date(),
-          ...(data.message_id && { messageId: data.message_id }),
-        };
-        if (data.session_id && !sessionId) {
-          onSessionId?.(data.session_id);
-        }
-        setLocalMessages(prev => [...prev, assistantMessage]);
-        skipSyncRef.current = true;
-        onNewMessage(assistantMessage);
-        setIsLoading(false);
+      if (!response.ok) {
+        throw new Error('API request failed');
       }
+
+      const data = await response.json();
+      const answer: string = data.answer ?? '';
+      const rawSources: Array<{ document_name?: string; page_start?: number; page_end?: number; snippet?: string; similarity?: number }> = data.sources ?? [];
+
+      references = rawSources.map((s, i) => ({
+        id: `${s.document_name ?? ''}-${s.page_start ?? 0}-${s.page_end ?? 0}-${i}`,
+        source: s.document_name ?? 'Source',
+        page: typeof s.page_start === 'number' ? s.page_start : 0,
+        snippet: s.snippet ?? '',
+      }));
+
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: answer,
+        references,
+        timestamp: new Date(),
+        ...(data.message_id && { messageId: data.message_id }),
+      };
+      if (data.session_id && !sessionId) {
+        onSessionId?.(data.session_id);
+      }
+      setLocalMessages(prev => [...prev, assistantMessage]);
+      skipSyncRef.current = true;
+      onNewMessage(assistantMessage);
+      setIsLoading(false);
     } catch (error) {
       console.error('Chat error:', error);
       const errorMessage: Message = {

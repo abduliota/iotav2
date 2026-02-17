@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from '@/lib/types';
@@ -15,39 +15,12 @@ interface MessageBubbleProps {
   sessionId?: string;
 }
 
-const MAX_ASSISTANT_PREVIEW_CHARS = 4000;
-
 export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [showSources, setShowSources] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
-
-  const isLongAssistantMessage =
-    !isUser && message.content && message.content.length > MAX_ASSISTANT_PREVIEW_CHARS;
-  const [expanded, setExpanded] = useState(false);
-  const contentForRender = isLongAssistantMessage && !expanded
-    ? `${message.content.slice(0, MAX_ASSISTANT_PREVIEW_CHARS)} …`
-    : message.content;
-
-  const renderedMarkdown = useMemo(
-    () => (
-      <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2" {...props} />,
-            ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2" {...props} />,
-            li: ({ node, ...props }) => <li className="my-0.5" {...props} />,
-          }}
-        >
-          {normalizeMarkdownLists(contentForRender)}
-        </ReactMarkdown>
-      </div>
-    ),
-    [contentForRender]
-  );
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -80,16 +53,18 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
           </div>
         ) : (
           <>
-            {renderedMarkdown}
-            {isLongAssistantMessage && (
-              <button
-                type="button"
-                className="mt-1 text-[11px] font-mono text-accent underline-offset-2 hover:underline"
-                onClick={() => setExpanded((prev) => !prev)}
+            <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2" {...props} />,
+                  ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2" {...props} />,
+                  li: ({ node, ...props }) => <li className="my-0.5" {...props} />,
+                }}
               >
-                {expanded ? 'Show less' : 'Show full answer'}
-              </button>
-            )}
+                {normalizeMarkdownLists(message.content)}
+              </ReactMarkdown>
+            </div>
             {message.references && message.references.length > 0 ? (
               <>
                 <div className="mt-2 flex items-center gap-2">

@@ -1523,31 +1523,6 @@ def answer_query(
     return out
 
 
-def answer_query_streaming(
-    user_query: str,
-    session_id: str | None = None,
-    chunk_size: int = 128,
-) -> tuple[str, list[dict[str, Any]], list[str]]:
-    """
-    Streaming-friendly wrapper around answer_query.
-
-    Currently computes the full answer once and then splits it into
-    fixed-size text chunks. This preserves existing RAG behavior while
-    enabling streaming delivery to the frontend without changing the
-    core generation pipeline.
-    """
-    result = answer_query(user_query, session_id=session_id)
-    answer = result.get("answer") or ""
-    sources = result.get("sources") or []
-    if not isinstance(answer, str):
-        answer = str(answer)
-    chunks: list[str] = []
-    if answer:
-        for i in range(0, len(answer), chunk_size):
-            chunks.append(answer[i : i + chunk_size])
-    return answer, sources, chunks
-
-
 # Max characters of snippet to print per source in CLI (readability)
 _SNIPPET_DISPLAY_CHARS = 280
 

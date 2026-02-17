@@ -12,7 +12,7 @@ interface AnimatedMessageProps {
   sessionId?: string;
 }
 
-export const AnimatedMessage = React.memo(function AnimatedMessage({ message, index, userId, sessionId }: AnimatedMessageProps) {
+export function AnimatedMessage({ message, index, userId, sessionId }: AnimatedMessageProps) {
   const isUser = message.role === 'user';
 
   return (
@@ -32,4 +32,4 @@ export const AnimatedMessage = React.memo(function AnimatedMessage({ message, in
       <MessageBubble message={message} userId={userId} sessionId={sessionId} />
     </motion.div>
   );
-});
+}
