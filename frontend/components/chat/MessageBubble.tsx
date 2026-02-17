@@ -161,7 +161,7 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
                       }}
                       className="p-0.5 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none"
                       aria-label={`${rating} star${rating === 1 ? '' : 's'}`}
-                      aria-pressed={feedbackSent !== null && feedbackSent >= rating ? 'true' : 'false'}
+                      aria-pressed={feedbackSent !== null && feedbackSent >= rating}
                     >
                       <Star
                         className={`h-4 w-4 ${

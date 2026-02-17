@@ -133,9 +133,17 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
           if (!evt || typeof evt !== 'object') continue;
 
           if (evt.type === 'meta') {
-            meta = evt.meta || {};
-            if (meta.session_id && !sessionId) {
-              onSessionId?.(meta.session_id);
+            const nextMeta = (evt.meta || {}) as {
+              user_id?: string;
+              session_id?: string;
+              message_id?: string;
+              sources?: any[];
+              user_id_created?: boolean;
+              session_id_created?: boolean;
+            };
+            meta = nextMeta;
+            if (nextMeta.session_id && !sessionId) {
+              onSessionId?.(nextMeta.session_id);
             }
             continue;
           }
