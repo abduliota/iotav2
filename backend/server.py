@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 import json
+import time
 
 # Ensure backend directory is on path when running uvicorn server:app from project root
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -178,11 +179,14 @@ def api_query_stream(body: QueryBody):
             # 1) send meta first
             yield json.dumps({"type": "meta", "meta": meta}) + "\n"
 
-            # 2) stream answer in small chunks
-            chunk_size = 256
+            # 2) stream answer in small chunks, spaced out slightly so
+            # the frontend sees multiple incremental updates instead of one big flush
+            chunk_size = 64
             for i in range(0, len(answer), chunk_size):
                 chunk = answer[i : i + chunk_size]
                 yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                # Small delay to encourage the HTTP client/browser to process chunks progressively
+                time.sleep(0.02)
 
             # 3) signal completion
             yield json.dumps({"type": "done"}) + "\n"
