@@ -15,12 +15,14 @@ interface MessageBubbleProps {
   sessionId?: string;
 }
 
-export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps) {
+function MessageBubbleComponent({ message, userId, sessionId }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [showSources, setShowSources] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
+  const isStreamingAssistant =
+    !isUser && (!message.references || message.references.length === 0);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -53,18 +55,25 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
           </div>
         ) : (
           <>
-            <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2" {...props} />,
-                  ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2" {...props} />,
-                  li: ({ node, ...props }) => <li className="my-0.5" {...props} />,
-                }}
-              >
-                {normalizeMarkdownLists(message.content)}
-              </ReactMarkdown>
-            </div>
+            {isStreamingAssistant ? (
+              // Lightweight view while streaming (avoid heavy markdown)
+              <div className="whitespace-pre-wrap break-words font-mono">
+                {message.content}
+              </div>
+            ) : (
+              <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2" {...props} />,
+                    ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2" {...props} />,
+                    li: ({ node, ...props }) => <li className="my-0.5" {...props} />,
+                  }}
+                >
+                  {normalizeMarkdownLists(message.content)}
+                </ReactMarkdown>
+              </div>
+            )}
             {message.references && message.references.length > 0 ? (
               <>
                 <div className="mt-2 flex items-center gap-2">
@@ -177,3 +186,5 @@ export function MessageBubble({ message, userId, sessionId }: MessageBubbleProps
     </div>
   );
 }
+
+export const MessageBubble = React.memo(MessageBubbleComponent);

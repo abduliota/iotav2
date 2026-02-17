@@ -45,6 +45,8 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
   const [activeTab, setActiveTab] = useState('answer');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const skipSyncRef = useRef(false);
+  const streamingBufferRef = useRef<string>(''); // buffer for streaming text
+  const streamingTimerRef = useRef<number | null>(null); // throttle timer id
 
   useEffect(() => {
     if (skipSyncRef.current) {
@@ -141,12 +143,20 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
           if (evt.type === 'chunk') {
             const text: string = evt.text ?? '';
             accumulated += text;
+            streamingBufferRef.current = accumulated;
 
-            setLocalMessages(prev =>
-              prev.map(m =>
-                m.id === assistantId ? { ...m, content: accumulated } : m
-              )
-            );
+            // Throttle UI updates to avoid re-rendering on every tiny chunk
+            if (streamingTimerRef.current === null) {
+              streamingTimerRef.current = window.setTimeout(() => {
+                const latest = streamingBufferRef.current;
+                setLocalMessages(prev =>
+                  prev.map(m =>
+                    m.id === assistantId ? { ...m, content: latest } : m
+                  )
+                );
+                streamingTimerRef.current = null;
+              }, 50);
+            }
           }
 
           if (evt.type === 'done') {
@@ -157,6 +167,18 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
             throw new Error(evt.detail || 'Streaming error');
           }
         }
+      }
+
+      // Flush any pending throttled update at the end
+      if (streamingTimerRef.current !== null) {
+        window.clearTimeout(streamingTimerRef.current);
+        streamingTimerRef.current = null;
+        const latest = streamingBufferRef.current || accumulated;
+        setLocalMessages(prev =>
+          prev.map(m =>
+            m.id === assistantId ? { ...m, content: latest } : m
+          )
+        );
       }
 
       const rawSources: Array<{
