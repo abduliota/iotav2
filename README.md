@@ -11,7 +11,7 @@ SAMA/NORA Compliance Assistant: RAG backend + chat frontend.
    pip install -r requirements.txt
    # Set .env for OpenAI/Supabase etc. See backend/README.md
    uvicorn server:app --reload
-   ```
+   ``` 
 
    Or from project root: `uvicorn backend.server:app --reload`
 
