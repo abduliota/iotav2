@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+import json
 
 # Ensure backend directory is on path when running uvicorn server:app from project root
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ except ImportError:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from simple_rag import answer_query
@@ -127,6 +129,77 @@ def api_query(body: QueryBody):
         return out
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Streaming query endpoint (wrapper, does NOT change core RAG) ---
+
+@app.post("/api/query-stream")
+def api_query_stream(body: QueryBody):
+    """
+    Streaming wrapper around answer_query.
+
+    - Calls answer_query once (does NOT change core RAG).
+    - Streams the final answer back to the client in small chunks as JSON lines.
+    """
+    try:
+        user_id = body.user_id
+        session_id = body.session_id
+        created_user = False
+        created_session = False
+
+        if not user_id:
+            user_id = create_user()
+            created_user = True
+        if not session_id:
+            session_id = create_session(user_id)
+            created_session = True
+
+        result = answer_query(body.query, session_id=session_id)
+        answer = result.get("answer") or ""
+        sources = result.get("sources") or []
+
+        message_id = insert_session_message(
+            session_id=session_id,
+            user_id=user_id,
+            user_message=body.query,
+            assistant_message=answer,
+        )
+
+        meta = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "sources": sources,
+            "user_id_created": created_user,
+            "session_id_created": created_session,
+        }
+
+        def event_stream():
+            # 1) send meta first
+            yield json.dumps({"type": "meta", "meta": meta}) + "\n"
+
+            # 2) stream answer in small chunks
+            chunk_size = 256
+            for i in range(0, len(answer), chunk_size):
+                chunk = answer[i : i + chunk_size]
+                yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+
+            # 3) signal completion
+            yield json.dumps({"type": "done"}) + "\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+        )
+    except Exception as e:
+        def error_stream():
+            yield json.dumps({"type": "error", "detail": str(e)}) + "\n"
+
+        return StreamingResponse(
+            error_stream(),
+            media_type="text/event-stream",
+            status_code=500,
+        )
 
 
 @app.post("/api/feedback")

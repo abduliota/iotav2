@@ -30,6 +30,14 @@ export type ConversationState = {
   last_query?: string;
 };
 
+function parseJSONLine(line: string): any | null {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
 export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitReached, sessionId, userId, onSessionId }: ChatInterfaceProps) {
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>({});
@@ -64,11 +72,9 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
 
     setIsLoading(true);
 
-    let references: Reference[] = [];
-
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${API_URL}/api/query`, {
+      const response = await fetch(`${API_URL}/api/query-stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -80,35 +86,116 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('API request failed');
+      if (!response.ok || !response.body) {
+        throw new Error('Streaming API request failed');
       }
 
-      const data = await response.json();
-      const answer: string = data.answer ?? '';
-      const rawSources: Array<{ document_name?: string; page_start?: number; page_end?: number; snippet?: string; similarity?: number }> = data.sources ?? [];
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
 
-      references = rawSources.map((s, i) => ({
+      const assistantId = (Date.now() + 1).toString();
+      let accumulated = '';
+      let meta:
+        | {
+            user_id?: string;
+            session_id?: string;
+            message_id?: string;
+            sources?: any[];
+            user_id_created?: boolean;
+            session_id_created?: boolean;
+          }
+        | null = null;
+      let done = false;
+
+      // Insert placeholder assistant message immediately
+      setLocalMessages(prev => [
+        ...prev,
+        {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+        },
+      ]);
+
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) {
+          break;
+        }
+        const chunkText = decoder.decode(value, { stream: true });
+        const lines = chunkText.split('\n').filter(Boolean);
+
+        for (const line of lines) {
+          const evt = parseJSONLine(line);
+          if (!evt || typeof evt !== 'object') continue;
+
+          if (evt.type === 'meta') {
+            meta = evt.meta || {};
+            if (meta.session_id && !sessionId) {
+              onSessionId?.(meta.session_id);
+            }
+            continue;
+          }
+
+          if (evt.type === 'chunk') {
+            const text: string = evt.text ?? '';
+            accumulated += text;
+
+            setLocalMessages(prev =>
+              prev.map(m =>
+                m.id === assistantId ? { ...m, content: accumulated } : m
+              )
+            );
+          }
+
+          if (evt.type === 'done') {
+            done = true;
+          }
+
+          if (evt.type === 'error') {
+            throw new Error(evt.detail || 'Streaming error');
+          }
+        }
+      }
+
+      const rawSources: Array<{
+        document_name?: string;
+        page_start?: number;
+        page_end?: number;
+        snippet?: string;
+        similarity?: number;
+      }> = (meta && Array.isArray(meta.sources) ? (meta.sources as any[]) : []);
+
+      const references: Reference[] = rawSources.map((s, i) => ({
         id: `${s.document_name ?? ''}-${s.page_start ?? 0}-${s.page_end ?? 0}-${i}`,
         source: s.document_name ?? 'Source',
         page: typeof s.page_start === 'number' ? s.page_start : 0,
         snippet: s.snippet ?? '',
       }));
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
+      setLocalMessages(prev =>
+        prev.map(m =>
+          m.id === assistantId
+            ? {
+                ...m,
+                references,
+                ...(meta && meta.message_id && { messageId: meta.message_id }),
+              }
+            : m
+        )
+      );
+
+      skipSyncRef.current = true;
+      onNewMessage({
+        id: assistantId,
         role: 'assistant',
-        content: answer,
+        content: accumulated,
         references,
         timestamp: new Date(),
-        ...(data.message_id && { messageId: data.message_id }),
-      };
-      if (data.session_id && !sessionId) {
-        onSessionId?.(data.session_id);
-      }
-      setLocalMessages(prev => [...prev, assistantMessage]);
-      skipSyncRef.current = true;
-      onNewMessage(assistantMessage);
+        ...(meta && meta.message_id && { messageId: meta.message_id }),
+      });
+
       setIsLoading(false);
     } catch (error) {
       console.error('Chat error:', error);
