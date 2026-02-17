@@ -67,3 +67,8 @@ export function updateChat(id: string, updates: Partial<Chat>): void {
   const updated = { ...chat, ...updates, updatedAt: new Date() };
   saveChat(updated);
 }
+
+export function saveChats(chats: Chat[]): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+}

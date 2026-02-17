@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Chat, Message } from '@/lib/types';
-import { getChat, saveChat, getUserId, setUserId } from '@/lib/storage';
+import { getChats, saveChats, getUserId, setUserId } from '@/lib/storage';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { ChatHistory } from '@/components/sidebar/ChatHistory';
 import { SummaryCard } from '@/components/dashboard/SummaryCard';
@@ -18,6 +18,7 @@ import { Menu } from 'lucide-react';
 
 export default function Home() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [chats, setChats] = useState<Chat[]>([]);
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
   const [userId, setUserIdState] = useState<string | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -45,6 +46,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const existingChats = getChats();
+    setChats(existingChats);
+
+    if (!selectedChatId && existingChats.length > 0) {
+      setSelectedChatId(existingChats[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (isAuthenticated) {
       resetPrompts();
     }
@@ -52,12 +63,12 @@ export default function Home() {
 
   useEffect(() => {
     if (selectedChatId) {
-      const chat = getChat(selectedChatId);
+      const chat = chats.find((c) => c.id === selectedChatId) || null;
       setCurrentChat(chat);
     } else {
       setCurrentChat(null);
     }
-  }, [selectedChatId]);
+  }, [selectedChatId, chats]);
 
   const handleNewMessage = (message: Message) => {
     if (message.role === 'user' && !isAuthenticated) {
@@ -89,15 +100,43 @@ export default function Home() {
       setCurrentChat(chat);
     }
 
-    saveChat(chat);
+    setChats((prev) => {
+      const idx = prev.findIndex((c) => c.id === chat.id);
+      if (idx === -1) {
+        const next = [chat, ...prev];
+        next.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+        return next;
+      }
+      const next = [...prev];
+      next[idx] = chat;
+      next.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      return next;
+    });
   };
 
   const handleSessionId = (serverSessionId: string) => {
     if (!currentChat) return;
     const updated = { ...currentChat, serverSessionId, updatedAt: new Date() };
     setCurrentChat(updated);
-    saveChat(updated);
+    setChats((prev) => {
+      const idx = prev.findIndex((c) => c.id === updated.id);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = updated;
+      next.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      return next;
+    });
   };
+
+  useEffect(() => {
+    if (chats.length === 0) return;
+
+    const MAX_CHATS = 50;
+    const trimmed =
+      chats.length > MAX_CHATS ? chats.slice(0, MAX_CHATS) : chats;
+
+    saveChats(trimmed);
+  }, [chats]);
 
   const latestMessageWithRefs = currentChat?.messages
     ? [...currentChat.messages].reverse().find((m) => m.role === 'assistant' && m.references?.length)
@@ -124,6 +163,7 @@ export default function Home() {
           <ThemeToggle />
         </div>
         <ChatHistory
+          chats={chats}
           selectedChatId={selectedChatId}
           onSelectChat={setSelectedChatId}
         />
@@ -212,6 +252,7 @@ export default function Home() {
                 </button>
               </div>
               <ChatHistory
+                chats={chats}
                 selectedChatId={selectedChatId}
                 onSelectChat={(id) => {
                   setSelectedChatId(id);

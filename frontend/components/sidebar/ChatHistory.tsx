@@ -1,24 +1,23 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Chat } from '@/lib/types';
-import { getChats } from '@/lib/storage';
 import { ChatItem } from './ChatItem';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus } from 'lucide-react';
 
 interface ChatHistoryProps {
+  chats: Chat[];
   selectedChatId: string | null;
   onSelectChat: (chatId: string | null) => void;
 }
 
-export function ChatHistory({ selectedChatId, onSelectChat }: ChatHistoryProps) {
-  const [chats, setChats] = useState<Chat[]>([]);
-
-  useEffect(() => {
-    setChats(getChats().sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()));
-  }, [selectedChatId]);
+export function ChatHistory({ chats, selectedChatId, onSelectChat }: ChatHistoryProps) {
+  const sortedChats = React.useMemo(
+    () => [...chats].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()),
+    [chats]
+  );
 
   const handleNewChat = () => {
     onSelectChat(null);
@@ -39,7 +38,7 @@ export function ChatHistory({ selectedChatId, onSelectChat }: ChatHistoryProps) 
       </div>
       <ScrollArea className="flex-1 px-2 pb-2 sidebar-scroll">
         <div className="space-y-0.5">
-          {chats.map((chat) => (
+          {sortedChats.map((chat) => (
             <ChatItem
               key={chat.id}
               chat={chat}
