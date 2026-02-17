@@ -47,7 +47,6 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
   const skipSyncRef = useRef(false);
   const streamingBufferRef = useRef<string>(''); // buffer for streaming text
   const streamingTimerRef = useRef<number | null>(null); // throttle timer id
-  const lastStreamedLengthRef = useRef<number>(0); // last length we pushed into React state
 
   useEffect(() => {
     if (skipSyncRef.current) {
@@ -154,22 +153,17 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
             accumulated += text;
             streamingBufferRef.current = accumulated;
 
-            // Throttle UI updates to avoid re-rendering on every tiny chunk.
-            // Only update React state when the answer has grown by a meaningful
-            // amount (to improve INP) and at most every ~250ms.
-            const prevLen = lastStreamedLengthRef.current;
-            const delta = accumulated.length - prevLen;
-            if (streamingTimerRef.current === null && (delta >= 80 || prevLen === 0)) {
+            // Throttle UI updates to avoid re-rendering on every tiny chunk
+            if (streamingTimerRef.current === null) {
               streamingTimerRef.current = window.setTimeout(() => {
                 const latest = streamingBufferRef.current;
-                lastStreamedLengthRef.current = latest.length;
                 setLocalMessages(prev =>
                   prev.map(m =>
                     m.id === assistantId ? { ...m, content: latest } : m
                   )
                 );
                 streamingTimerRef.current = null;
-              }, 250);
+              }, 50);
             }
           }
 
@@ -188,7 +182,6 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         window.clearTimeout(streamingTimerRef.current);
         streamingTimerRef.current = null;
         const latest = streamingBufferRef.current || accumulated;
-        lastStreamedLengthRef.current = latest.length;
         setLocalMessages(prev =>
           prev.map(m =>
             m.id === assistantId ? { ...m, content: latest } : m

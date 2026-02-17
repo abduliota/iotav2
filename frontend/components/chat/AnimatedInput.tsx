@@ -16,29 +16,12 @@ export function AnimatedInput({ onSend, disabled = false, canSend = true, onLimi
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const resizeRafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-
-    if (resizeRafRef.current !== null) {
-      window.cancelAnimationFrame(resizeRafRef.current);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
     }
-
-    resizeRafRef.current = window.requestAnimationFrame(() => {
-      if (!textareaRef.current) return;
-      const node = textareaRef.current;
-      node.style.height = 'auto';
-      node.style.height = `${node.scrollHeight}px`;
-    });
-
-    return () => {
-      if (resizeRafRef.current !== null) {
-        window.cancelAnimationFrame(resizeRafRef.current);
-        resizeRafRef.current = null;
-      }
-    };
   }, [input]);
 
   const handleSubmit = () => {
@@ -67,7 +50,7 @@ export function AnimatedInput({ onSend, disabled = false, canSend = true, onLimi
     <div className="p-0">
       <div className="flex min-h-[44px] items-center gap-2">
         <div
-          className={`flex-1 relative flex min-h-[44px] items-center gap-0 border border-border bg-[var(--input)] cyber-chamfer-sm focus-within:border-accent focus-within:shadow-neon-sm transition-colors duration-150 ${!canSend ? 'cursor-pointer' : ''}`}
+          className={`flex-1 relative flex min-h-[44px] items-center gap-0 border border-border bg-[var(--input)] cyber-chamfer-sm focus-within:border-accent focus-within:shadow-neon-sm transition-all duration-150 ${!canSend ? 'cursor-pointer' : ''}`}
           onClick={!canSend ? () => onLimitReached?.() : undefined}
         >
           <span className="pl-3 text-accent font-mono select-none flex items-center" aria-hidden="true">
@@ -83,7 +66,7 @@ export function AnimatedInput({ onSend, disabled = false, canSend = true, onLimi
             onBlur={() => setIsFocused(false)}
             disabled={disabled || !canSend}
             placeholder={canSend ? "Ask about the uploaded PDF..." : "Sign up for unlimited prompts"}
-            className="flex-1 min-w-0 px-3 py-3 bg-transparent border-0 resize-none focus:outline-none focus:ring-0 disabled:opacity-50 text-foreground placeholder:text-muted-foreground font-mono text-sm tracking-wide transition-colors duration-150 max-h-32 custom-scroll"
+            className="flex-1 min-w-0 px-3 py-3 bg-transparent border-0 resize-none focus:outline-none focus:ring-0 disabled:opacity-50 text-foreground placeholder:text-muted-foreground font-mono text-sm tracking-wide transition-all duration-150 max-h-32 custom-scroll"
             rows={1}
           />
         </div>
