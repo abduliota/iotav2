@@ -15,7 +15,17 @@ export function References({ references, answerText }: ReferencesProps) {
   if (!references || references.length === 0) return null;
 
   const selected = references[selectedIndex];
-  const segments = getSnippetHighlightSegments(selected.snippet, answerText ?? '');
+
+  const selectedSnippet = selected.snippet ?? '';
+  const safeAnswerText = answerText ?? '';
+
+  // Extra guard: avoid running expensive highlighting on very large snippets.
+  const shouldHighlight =
+    safeAnswerText.length > 0 && selectedSnippet.length <= 1500;
+
+  const segments = shouldHighlight
+    ? getSnippetHighlightSegments(selectedSnippet, safeAnswerText)
+    : [{ type: 'text', content: selectedSnippet }];
 
   return (
     <div className="mt-2">

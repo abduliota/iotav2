@@ -16,6 +16,8 @@ export function normalizeMarkdownLists(text: string): string {
 }
 
 const SNIPPET_HIGHLIGHT_MIN_LEN = 15
+const SNIPPET_HIGHLIGHT_MAX_SNIPPET_LEN = 1500
+const SNIPPET_HIGHLIGHT_MAX_ANSWER_LEN = 6000
 
 /**
  * Find ranges in snippet that appear (verbatim, normalized) in answerText.
@@ -26,6 +28,15 @@ export function getSnippetHighlightRanges(
   answerText: string
 ): { start: number; end: number }[] {
   if (!snippet?.trim() || !answerText?.trim()) return []
+
+  // Protect against very large texts causing long main-thread blocks.
+  if (
+    snippet.length > SNIPPET_HIGHLIGHT_MAX_SNIPPET_LEN ||
+    answerText.length > SNIPPET_HIGHLIGHT_MAX_ANSWER_LEN
+  ) {
+    return []
+  }
+
   const answerNorm = answerText.replace(/\s+/g, " ").trim().toLowerCase()
   const ranges: { start: number; end: number }[] = []
   for (let start = 0; start < snippet.length; start++) {

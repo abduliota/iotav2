@@ -17,6 +17,8 @@ interface MessageBubbleProps {
   isLatestAssistant?: boolean;
 }
 
+const MAX_MARKDOWN_LENGTH = 4000;
+
 function MessageBubbleComponent({
   message,
   userId,
@@ -33,7 +35,10 @@ function MessageBubbleComponent({
   // Only the latest assistant message should use full markdown rendering;
   // older answers stay in the lightweight plain-text view to avoid heavy
   // re-renders blocking the main thread.
-  const shouldUseMarkdown = !isUser && Boolean(isLatestAssistant);
+  const shouldUseMarkdown =
+    !isUser &&
+    Boolean(isLatestAssistant) &&
+    message.content.length <= MAX_MARKDOWN_LENGTH;
   const [enableMarkdown, setEnableMarkdown] = useState(false);
 
   // Defer heavy markdown rendering slightly so the UI can show the full
@@ -53,10 +58,14 @@ function MessageBubbleComponent({
     }
 
     // When streaming finishes (references appear), first show plain text,
-    // then upgrade to markdown after a short delay.
+    // then upgrade to markdown after a short delay. For longer messages,
+    // wait a bit longer to avoid competing with user interactions.
+    const baseDelay = 150;
+    const extraDelay = message.content.length > 2000 ? 150 : 0;
+
     let timeoutId: number | null = window.setTimeout(() => {
       setEnableMarkdown(true);
-    }, 150);
+    }, baseDelay + extraDelay);
 
     return () => {
       if (timeoutId !== null) {

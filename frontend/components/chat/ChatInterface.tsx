@@ -242,7 +242,11 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
     }
   };
 
-  const allMessages = [...localMessages];
+  const MAX_RENDERED_MESSAGES = 50;
+  const allMessages =
+    localMessages.length > MAX_RENDERED_MESSAGES
+      ? localMessages.slice(-MAX_RENDERED_MESSAGES)
+      : [...localMessages];
 
   return (
     <div className="flex h-full">
