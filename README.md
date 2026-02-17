@@ -635,39 +635,8 @@ npm run dev
 - **OCR**: PaddleOCR (en + ar, 200 DPI)
 - **Vector Search**: pgvector (cosine similarity)
 - **Reranking**: Cross-encoder reranking with keyword boosting
-- **Translation**: Optional OpenAI API for Arabic-to-English translation (only if ENABLE_ARABIC_TRANSLATE_FOR_RETRIEVAL=true)
-- **Quantization**: BitsAndBytesConfig (4-bit NF4, double quantization)
 
 ---
-
-## 🤝 Contributing
-
-We welcome contributions! Please follow these guidelines:
-
-### Contribution Process
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Code Standards
-
-- Follow TypeScript/JavaScript best practices
-- Use ESLint for code quality
-- Add comments for complex logic
-- Update documentation as needed
-
-### Commit Guidelines
-
-Use Conventional Commits:
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation changes
-- `perf:` Performance improvements
-- `refactor:` Code refactoring
 
 ---
 
@@ -680,7 +649,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 ## 🙏 Acknowledgments
 
 - **SAMA** (Saudi Arabian Monetary Authority) for regulatory framework
-- **Azure OpenAI** for embedding services
 - **Supabase** for database infrastructure
 - **Qwen** team for the open-source LLM
 
@@ -689,7 +657,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 ## 📞 Support
 
 - **Issues**: [GitHub Issues](https://github.com/your-org/Iotav2/issues)
-- **Documentation**: [Full Documentation](./docs)
 
 ---
 
