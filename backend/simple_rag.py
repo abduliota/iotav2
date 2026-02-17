@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 
@@ -112,7 +112,8 @@ from translate import translate_to_arabic
 from supabase_client import get_client
 from users_sessions import get_session_message_history
 from qwen_model import _load_qwen
-from transformers import GenerationConfig
+from transformers import GenerationConfig, TextIteratorStreamer
+import threading
 
 # ---- Logging: file + console ----
 _LOG: logging.Logger | None = None
@@ -1015,6 +1016,7 @@ def generate_answer_simple(
     user_query: str,
     intent: str = QUERY_INTENT_OTHER,
     conversation_history: list[dict] | None = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Use Qwen to turn context + question into a detailed, well-formed answer (DB-only)."""
     tokenizer, model = _load_qwen()
@@ -1065,12 +1067,37 @@ def generate_answer_simple(
         do_sample=False,
         repetition_penalty=1.2,
     )
-    with torch.no_grad():
-        outputs = model.generate(**inputs, generation_config=gen_config)
 
-    # Decode only the newly generated tokens (exclude the prompt)
-    generated_ids = outputs[0][input_length:]
-    decoded = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    # Use a streaming generator so callers can see partial text as it is generated.
+    # We still accumulate the full decoded output locally so post-processing and
+    # final answers remain identical to the non-streaming path.
+    streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+
+    def _run_generate() -> None:
+        with torch.no_grad():
+            model.generate(
+                **inputs,
+                generation_config=gen_config,
+                streamer=streamer,
+            )
+
+    thread = threading.Thread(target=_run_generate, daemon=True)
+    thread.start()
+
+    pieces: list[str] = []
+    for text in streamer:
+        if not text:
+            continue
+        pieces.append(text)
+        if on_chunk is not None:
+            try:
+                on_chunk(text)
+            except Exception:
+                # Streaming to the client should never break generation;
+                # log inside caller if needed.
+                pass
+
+    decoded = "".join(pieces)
     decoded = _truncate_instruction_echo(decoded)
     decoded = _truncate_conversation_leakage(decoded)
     decoded = _strip_leading_format_echo(decoded)
@@ -1096,6 +1123,7 @@ def answer_query(
     top_k: int | None = None,
     category: str | None = None,
     session_id: str | None = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
     """Run simple RAG: embed -> fetch -> build context -> Qwen -> return answer and sources."""
     log = _get_logger()
@@ -1277,7 +1305,11 @@ def answer_query(
     else:
         try:
             answer = generate_answer_simple(
-                context_text, q, intent, conversation_history=conversation_history or None
+                context_text,
+                q,
+                intent,
+                conversation_history=conversation_history or None,
+                on_chunk=on_chunk,
             )
         except Exception as e:
             log.exception("generate_answer_simple failed: %s", e)

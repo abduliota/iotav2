@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 import json
 import time
+import threading
+import queue
 
 # Ensure backend directory is on path when running uvicorn server:app from project root
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -155,40 +157,65 @@ def api_query_stream(body: QueryBody):
             session_id = create_session(user_id)
             created_session = True
 
-        result = answer_query(body.query, session_id=session_id)
-        answer = result.get("answer") or ""
-        sources = result.get("sources") or []
+        # Queue for streaming text chunks from the RAG pipeline to the client.
+        chunk_queue: "queue.Queue[str | None]" = queue.Queue()
+        result_holder: dict[str, dict] = {}
 
-        message_id = insert_session_message(
-            session_id=session_id,
-            user_id=user_id,
-            user_message=body.query,
-            assistant_message=answer,
-        )
+        def on_chunk(text: str) -> None:
+            """Called from within the RAG generation loop for each new text piece."""
+            # Push incremental text into the queue; the streaming generator
+            # below will read from this and send it to the client.
+            chunk_queue.put(text)
 
-        meta = {
-            "user_id": user_id,
-            "session_id": session_id,
-            "message_id": message_id,
-            "sources": sources,
-            "user_id_created": created_user,
-            "session_id_created": created_session,
-        }
+        def run_rag() -> None:
+            """Run answer_query in a background thread, streaming chunks via on_chunk."""
+            try:
+                result = answer_query(body.query, session_id=session_id, on_chunk=on_chunk)
+                result_holder["result"] = result
+            except Exception as e:  # pragma: no cover - defensive
+                result_holder["error"] = {"detail": str(e)}
+            finally:
+                # Sentinel to signal completion to the streaming loop.
+                chunk_queue.put(None)
+
+        # Start the RAG pipeline in a separate thread so we can stream chunks as they arrive.
+        threading.Thread(target=run_rag, daemon=True).start()
 
         def event_stream():
-            # 1) send meta first
-            yield json.dumps({"type": "meta", "meta": meta}) + "\n"
-
-            # 2) stream answer in small chunks, spaced out slightly so
-            # the frontend sees multiple incremental updates instead of one big flush
-            chunk_size = 64
-            for i in range(0, len(answer), chunk_size):
-                chunk = answer[i : i + chunk_size]
+            # 1) Stream chunks to the client as they are generated.
+            while True:
+                chunk = chunk_queue.get()
+                if chunk is None:
+                    break
                 yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
-                # Small delay to encourage the HTTP client/browser to process chunks progressively
-                time.sleep(0.02)
 
-            # 3) signal completion
+            # 2) After generation finishes, either send an error or finalize the response.
+            if "error" in result_holder:
+                yield json.dumps({"type": "error", "detail": result_holder["error"]["detail"]}) + "\n"
+                return
+
+            result = result_holder.get("result") or {}
+            answer = result.get("answer") or ""
+            sources = result.get("sources") or []
+
+            message_id = insert_session_message(
+                session_id=session_id,
+                user_id=user_id,
+                user_message=body.query,
+                assistant_message=answer,
+            )
+
+            meta = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "message_id": message_id,
+                "sources": sources,
+                "user_id_created": created_user,
+                "session_id_created": created_session,
+            }
+
+            # 3) Send meta and completion signal.
+            yield json.dumps({"type": "meta", "meta": meta}) + "\n"
             yield json.dumps({"type": "done"}) + "\n"
 
         return StreamingResponse(
