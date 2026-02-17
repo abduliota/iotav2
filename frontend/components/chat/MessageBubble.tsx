@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from '@/lib/types';
@@ -23,6 +23,29 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
   const canSendFeedback = !isUser && Boolean(message.messageId && userId && sessionId);
   const isStreamingAssistant =
     !isUser && (!message.references || message.references.length === 0);
+  const [enableMarkdown, setEnableMarkdown] = useState(false);
+
+  // Defer heavy markdown rendering slightly so the UI can show the full
+  // plain-text answer immediately without feeling frozen on large responses.
+  useEffect(() => {
+    // While streaming, always use the lightweight view.
+    if (isStreamingAssistant) {
+      setEnableMarkdown(false);
+      return;
+    }
+
+    // When streaming finishes (references appear), first show plain text,
+    // then upgrade to markdown after a short delay.
+    let timeoutId: number | null = window.setTimeout(() => {
+      setEnableMarkdown(true);
+    }, 150);
+
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [isStreamingAssistant, message.content]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -55,8 +78,9 @@ function MessageBubbleComponent({ message, userId, sessionId }: MessageBubblePro
           </div>
         ) : (
           <>
-            {isStreamingAssistant ? (
-              // Lightweight view while streaming (avoid heavy markdown)
+            {isStreamingAssistant || !enableMarkdown ? (
+              // Lightweight view while streaming and immediately after completion
+              // (before markdown is enabled) to avoid heavy renders on large answers.
               <div className="whitespace-pre-wrap break-words font-mono">
                 {message.content}
               </div>
