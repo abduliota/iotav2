@@ -141,7 +141,7 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
               user_id_created?: boolean;
               session_id_created?: boolean;
             };
-            meta = nextMeta;
+            meta = { ...(meta ?? {}), ...nextMeta };
             if (nextMeta.session_id && !sessionId) {
               onSessionId?.(nextMeta.session_id);
             }

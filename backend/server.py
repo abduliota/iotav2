@@ -159,29 +159,42 @@ def api_query_stream(body: QueryBody):
 
         # Queue for streaming text chunks from the RAG pipeline to the client.
         chunk_queue: "queue.Queue[str | None]" = queue.Queue()
+        sources_queue: "queue.Queue[list]" = queue.Queue()
         result_holder: dict[str, dict] = {}
 
         def on_chunk(text: str) -> None:
             """Called from within the RAG generation loop for each new text piece."""
-            # Push incremental text into the queue; the streaming generator
-            # below will read from this and send it to the client.
             chunk_queue.put(text)
+
+        def on_sources_ready(sources: list) -> None:
+            """Called when retrieval is done; client gets sources early so they show even if stream is cut."""
+            sources_queue.put(sources)
 
         def run_rag() -> None:
             """Run answer_query in a background thread, streaming chunks via on_chunk."""
             try:
-                result = answer_query(body.query, session_id=session_id, on_chunk=on_chunk)
+                result = answer_query(
+                    body.query,
+                    session_id=session_id,
+                    on_chunk=on_chunk,
+                    on_sources_ready=on_sources_ready,
+                )
                 result_holder["result"] = result
             except Exception as e:  # pragma: no cover - defensive
                 result_holder["error"] = {"detail": str(e)}
             finally:
-                # Sentinel to signal completion to the streaming loop.
                 chunk_queue.put(None)
 
-        # Start the RAG pipeline in a separate thread so we can stream chunks as they arrive.
         threading.Thread(target=run_rag, daemon=True).start()
 
         def event_stream():
+            # 0) Send meta with sources as soon as retrieval is done (so client has sources even if stream is cut later).
+            try:
+                early_sources = sources_queue.get(timeout=120)
+            except queue.Empty:
+                early_sources = []
+            yield json.dumps({"type": "meta", "meta": {"sources": early_sources}}) + "\n"
+
             # 1) Stream chunks to the client as they are generated.
             while True:
                 chunk = chunk_queue.get()
