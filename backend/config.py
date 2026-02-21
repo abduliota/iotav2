@@ -375,6 +375,17 @@ SIMPLE_RAG_ANSWER_MARKER = os.getenv(
     "SIMPLE_RAG_ANSWER_MARKER",
     "Answer in clear sentences using only the context above:",
 )
+# Sentinel after which model output is streamed to client (avoids leaking prompt echo)
+STREAM_ANSWER_SENTINEL = os.getenv("STREAM_ANSWER_SENTINEL", "\n\nAnswer:")
+# Exact phrases (lowercase) that are greetings; queries that match are treated as out-of-scope (pipe-separated)
+SIMPLE_RAG_GREETINGS = [
+    s.strip().lower()
+    for s in os.getenv(
+        "SIMPLE_RAG_GREETINGS",
+        "hi|hello|hey|helllo|hi!|hello!|hey!|مرحبا",
+    ).split("|")
+    if s.strip()
+]
 SIMPLE_RAG_PROMPTS_DIR = BACKEND_DIR / "prompts"
 SIMPLE_RAG_LOG_DIR = BACKEND_DIR / "logs"
 SIMPLE_RAG_LOG_PATH = os.getenv(
@@ -574,7 +585,7 @@ SIMPLE_RAG_ECHO_PHRASES = [
     s.strip()
     for s in os.getenv(
         "SIMPLE_RAG_ECHO_PHRASES",
-        "Please write in English language|Answer only in Arabic|Question:|Answer in clear sentences using only the context above",
+        "You are a specialized regulatory AI assistant|Please write in English language|Answer only in Arabic|Question:|Answer in clear sentences using only the context above",
     ).split("|")
     if s.strip()
 ]

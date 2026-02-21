@@ -52,6 +52,8 @@ from config import (
     SIMPLE_RAG_ANSWER_MARKER,
     SIMPLE_RAG_CONFABULATION_BLOCKLIST,
     SIMPLE_RAG_ECHO_PHRASES,
+    SIMPLE_RAG_GREETINGS,
+    STREAM_ANSWER_SENTINEL,
     SIMPLE_RAG_FILLER_PHRASES,
     MIN_CHUNK_SIMILARITY,
     MIN_CHUNK_SIMILARITY_ARABIC,
@@ -517,6 +519,10 @@ def _is_in_scope(query: str) -> bool:
     if not query or not query.strip():
         return False
     q = query.strip().lower()
+    # Greetings / pure social phrases → out-of-scope (exact match, optional trailing punctuation)
+    q_normalized = q.rstrip(".!?")
+    if q_normalized in SIMPLE_RAG_GREETINGS or q in SIMPLE_RAG_GREETINGS:
+        return False
     # Explicit off-topic patterns → refuse
     for pattern in SIMPLE_RAG_OFF_TOPIC_PATTERNS:
         if pattern and pattern in q:
@@ -1085,17 +1091,29 @@ def generate_answer_simple(
     thread.start()
 
     pieces: list[str] = []
+    buffer = ""
+    stream_start: Optional[int] = None
+    last_sent_index = 0
+    sentinel = STREAM_ANSWER_SENTINEL or "Answer:"
     for text in streamer:
         if not text:
             continue
         pieces.append(text)
+        buffer += text
         if on_chunk is not None:
-            try:
-                on_chunk(text)
-            except Exception:
-                # Streaming to the client should never break generation;
-                # log inside caller if needed.
-                pass
+            if stream_start is None:
+                idx = buffer.find(sentinel)
+                if idx >= 0:
+                    stream_start = idx + len(sentinel)
+                    last_sent_index = stream_start
+            if stream_start is not None:
+                try:
+                    to_send = buffer[last_sent_index:]
+                    if to_send:
+                        on_chunk(to_send)
+                    last_sent_index = len(buffer)
+                except Exception:
+                    pass
 
     decoded = "".join(pieces)
     decoded = _truncate_instruction_echo(decoded)
@@ -1129,7 +1147,13 @@ def answer_query(
     log = _get_logger()
     if not user_query or not user_query.strip():
         log.info("answer_query: empty query")
-        return {"answer": "Please provide a question.", "sources": []}
+        answer = "Please provide a question."
+        if on_chunk is not None:
+            try:
+                on_chunk(answer)
+            except Exception:
+                pass
+        return {"answer": answer, "sources": []}
 
     q = user_query.strip()
     intent = _classify_query_intent(q)
@@ -1143,7 +1167,13 @@ def answer_query(
 
     if not in_scope:
         log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
-        return {"answer": SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE, "sources": []}
+        answer = SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE
+        if on_chunk is not None:
+            try:
+                on_chunk(answer)
+            except Exception:
+                pass
+        return {"answer": answer, "sources": []}
 
     if top_k is not None:
         k = top_k
