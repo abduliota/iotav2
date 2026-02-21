@@ -17,6 +17,7 @@ build/
 .env.local
 .env.*.local
 *.pem
+notes.txt
 
 # Backend output and logs
 backend/output/

@@ -159,7 +159,9 @@ function MessageBubbleComponent({
               </>
             ) : (
               <div className="mt-2 text-xs text-muted-foreground">
-                No sources used
+                {message.content && message.content.includes('I only answer questions about SAMA and NORA')
+                  ? 'Out of scope — no sources'
+                  : 'No sources used'}
               </div>
             )}
             <div className="mt-2 flex flex-wrap gap-1.5 items-center">

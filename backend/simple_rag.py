@@ -1136,39 +1136,18 @@ def generate_answer_simple(
     return answer
 
 
-def _build_sources_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build the same source list structure used in the final return (for early meta)."""
-    snippet_limit = SNIPPET_CHAR_LIMIT
-    return [
-        {
-            "document_name": row.get("document_name"),
-            "page_start": row.get("page_start"),
-            "page_end": row.get("page_end"),
-            "article_id": row.get("article_id") or row.get("article_number") or row.get("article"),
-            "snippet": (row.get("snippet") or (row.get("content") or "")[:snippet_limit]),
-        }
-        for row in chunks
-    ]
-
-
 def answer_query(
     user_query: str,
     top_k: int | None = None,
     category: str | None = None,
     session_id: str | None = None,
     on_chunk: Optional[Callable[[str], None]] = None,
-    on_sources_ready: Optional[Callable[[list], None]] = None,
 ) -> dict[str, Any]:
     """Run simple RAG: embed -> fetch -> build context -> Qwen -> return answer and sources."""
     log = _get_logger()
     if not user_query or not user_query.strip():
         log.info("answer_query: empty query")
         answer = "Please provide a question."
-        if on_sources_ready is not None:
-            try:
-                on_sources_ready([])
-            except Exception:
-                pass
         if on_chunk is not None:
             try:
                 on_chunk(answer)
@@ -1189,11 +1168,6 @@ def answer_query(
     if not in_scope:
         log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
         answer = SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE
-        if on_sources_ready is not None:
-            try:
-                on_sources_ready([])
-            except Exception:
-                pass
         if on_chunk is not None:
             try:
                 on_chunk(answer)
@@ -1265,11 +1239,6 @@ def answer_query(
             top5 = chunks[:5]
             if not any((entity.strip().lower() in (c.get("content") or "").lower()) for c in top5):
                 log.info("arabic_entity_presence: query entity '%s' not in top chunks; returning not_found", entity[:50])
-                if on_sources_ready is not None:
-                    try:
-                        on_sources_ready(_build_sources_from_chunks(chunks))
-                    except Exception:
-                        pass
                 return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC, "sources": []}
     if chunks:
         top_docs = [(r.get("document_name"), r.get("page_start"), r.get("page_end")) for r in chunks[:3]]
@@ -1281,19 +1250,9 @@ def answer_query(
             log.info("retrieval_language_consistency: Arabic query but no Arabic chunk in top; continuing with EN context")
     if ENABLE_STRICT_RETRIEVAL_LANGUAGE_FILTER and _is_arabic_query(q) and chunks and not has_arabic_in_top:
         log.info("strict_retrieval_language: Arabic query, no Arabic chunk in top; returning Arabic not_found")
-        if on_sources_ready is not None:
-            try:
-                on_sources_ready(_build_sources_from_chunks(chunks))
-            except Exception:
-                pass
         return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC, "sources": []}
 
     if not chunks:
-        if on_sources_ready is not None:
-            try:
-                on_sources_ready([])
-            except Exception:
-                pass
         if AMBIGUITY_DETECTION_ENABLED and len(q.split()) <= AMBIGUITY_MAX_WORDS:
             log.info("ambiguity: no chunks for short query; returning clarification")
             return {"answer": SIMPLE_RAG_CLARIFICATION_MESSAGE, "sources": []}
@@ -1331,11 +1290,6 @@ def answer_query(
             "similarity_gate: top %.3f < threshold %.3f (intent=%s arabic=%s); top3=%s; returning not_found",
             top_similarity, effective_threshold, intent, _is_arabic_query(q), top3[:3],
         )
-        if on_sources_ready is not None:
-            try:
-                on_sources_ready(_build_sources_from_chunks(chunks[:5]))
-            except Exception:
-                pass
         return {
             "answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE,
             "sources": [{"document_name": c.get("document_name"), "page_start": c.get("page_start"), "page_end": c.get("page_end"), "snippet": (c.get("content") or "")[:SNIPPET_CHAR_LIMIT]} for c in chunks[:5]],
@@ -1345,11 +1299,6 @@ def answer_query(
         chunks = [c for c in chunks if (float(c.get("cosine_similarity") or c.get("similarity") or c.get("score") or 0) >= effective_threshold)]
         if not chunks:
             log.info("similarity_gate: no chunks above effective threshold %.3f; returning not_found", effective_threshold)
-            if on_sources_ready is not None:
-                try:
-                    on_sources_ready([])
-                except Exception:
-                    pass
             return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
 
     # Intent-aware upper bound: for fact_definition/metadata require at least one chunk above strict bar (reduce noise)
@@ -1357,11 +1306,6 @@ def answer_query(
         top_sim = _top_retrieval_similarity(chunks)
         if top_sim < MIN_CHUNK_SIMILARITY_STRICT:
             log.info("strict_quality_gate: top similarity %.3f < MIN_CHUNK_SIMILARITY_STRICT %.3f (intent=%s); returning not_found", top_sim, MIN_CHUNK_SIMILARITY_STRICT, intent)
-            if on_sources_ready is not None:
-                try:
-                    on_sources_ready(_build_sources_from_chunks(chunks))
-                except Exception:
-                    pass
             return {"answer": SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE, "sources": []}
 
     for c in chunks:
@@ -1373,11 +1317,6 @@ def answer_query(
         if definition_chunks:
             chunks = _reorder_definition_chunks_first(chunks)
 
-    if on_sources_ready is not None:
-        try:
-            on_sources_ready(_build_sources_from_chunks(chunks))
-        except Exception:
-            pass
     context_text = build_context(chunks)
     conversation_history: list[dict] = []
     if session_id:
@@ -1394,13 +1333,16 @@ def answer_query(
             answer = SIMPLE_RAG_NOT_FOUND_MESSAGE_ARABIC if _is_arabic_query(q) else SIMPLE_RAG_NOT_FOUND_MESSAGE
         log.debug("extractive_builder used for intent=%s", intent)
     else:
+        # For definition-style queries, do not stream raw model output (avoids Norway/general-knowledge leak).
+        # We will stream the final post-processed answer once after all overrides/fallbacks.
+        stream_during_gen = None if intent == QUERY_INTENT_FACT_DEFINITION else on_chunk
         try:
             answer = generate_answer_simple(
                 context_text,
                 q,
                 intent,
                 conversation_history=conversation_history or None,
-                on_chunk=on_chunk,
+                on_chunk=stream_during_gen,
             )
         except Exception as e:
             log.exception("generate_answer_simple failed: %s", e)
@@ -1524,7 +1466,14 @@ def answer_query(
                     if term_lower == "sama":
                         use_fallback = "saudi arabian monetary authority" not in answer_lower and "saudi central bank" not in answer_lower
                     elif term_lower == "nora":
-                        use_fallback = "national regulatory authority" not in answer_lower
+                        # Force Saudi NORA: if model talks about Norway/Norwegian, always use fallback
+                        use_fallback = (
+                            "national regulatory authority" not in answer_lower
+                            or "norway" in answer_lower
+                            or "norwegian" in answer_lower
+                            or "northern europe" in answer_lower
+                            or " oslo " in answer_lower
+                        )
                 if use_fallback:
                     answer = DEFINITION_ACRONYM_FALLBACK[term_lower]
                     log.info("definition_acronym_fallback: set answer for '%s'", term_lower)
@@ -1636,13 +1585,19 @@ def answer_query(
         }
         for row in chunks
     ]
-    if _is_not_found_answer(answer):
-        sources = []
+    # Keep sources whenever we have chunks so the UI can show "sources considered" even when answer is not_found
+    # (removed: if _is_not_found_answer(answer): sources = [])
     out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
     if RETURN_CONFIDENCE_SCORE:
         out["confidence"] = 0.0 if _is_not_found_answer(answer) else _grounding_confidence
     if RETURN_CITATION_VALID:
         out["citation_valid"] = citation_valid
+    # For definition-style we did not stream during generation; send the final answer as one chunk now
+    if intent == QUERY_INTENT_FACT_DEFINITION and on_chunk is not None and answer:
+        try:
+            on_chunk(answer)
+        except Exception:
+            pass
     return out
 
 
