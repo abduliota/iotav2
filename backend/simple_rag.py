@@ -688,6 +688,10 @@ def _is_definition_style_query(query: str) -> tuple[bool, str]:
     if not query or not query.strip():
         return False, ""
     q = query.strip()
+    # Normalize Unicode apostrophes to ASCII so "What's" (curly quote) matches regex
+    for _apos in ("\u2019", "\u02bc", "\u02bb", "\u2018"):
+        q = q.replace(_apos, "'")
+    q = q.replace("what's", "what is")
     for pat in _DEFINITION_QUERY_PATTERNS:
         m = pat.search(q)
         if m:
@@ -1184,26 +1188,8 @@ def answer_query(
         return {"answer": answer, "sources": []}
 
     q = user_query.strip()
-    intent = _classify_query_intent(q)
-    in_scope = _is_in_scope(q)
-    scope_keyword_matches = _in_scope_keyword_match_count(q)
-    log.info("intent=%s in_scope=%s scope_keyword_matches=%s query=%s", intent, in_scope, scope_keyword_matches, q[:200] if q else "")
-    if category:
-        log.debug("query [%s] intent=%s: %s", category, intent, q)
-    else:
-        log.debug("query intent=%s: %s", intent, q)
 
-    if not in_scope:
-        log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
-        answer = SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE
-        if on_chunk is not None:
-            try:
-                on_chunk(answer)
-            except Exception:
-                pass
-        return {"answer": answer, "sources": []}
-
-    # Hard-coded SAMA/NORA definition: return canonical one-liner without model or extractive builder
+    # Hard-coded SAMA/NORA definition first (before in_scope) so "What's sama?" / "What is NORA?" always get canonical answer
     is_def, term = _is_definition_style_query(q)
     term_clean = re.sub(r"[?!.,;:]+$", "", term.strip().lower()) if term else ""
     if is_def and term_clean in ("sama", "nora") and term_clean in DEFINITION_ACRONYM_FALLBACK:
@@ -1214,7 +1200,7 @@ def answer_query(
             expansion = ACRONYM_EXPANSIONS.get(term_clean, "")
             q_embed = normalize_query_for_embedding(q + " " + expansion) if expansion else normalize_query_for_embedding(q)
             query_embedding = embed_query(q_embed)
-            chunks_def = fetch_chunks(query_embedding, limit=10)
+            chunks_def = fetch_chunks(query_embedding, limit=15)
             seen_keys_def: set[tuple[str, int, int]] = set()
             for row in chunks_def:
                 doc = row.get("document_name") or ""
@@ -1241,6 +1227,25 @@ def answer_query(
                 pass
         return {"answer": answer, "sources": sources}
 
+    intent = _classify_query_intent(q)
+    in_scope = _is_in_scope(q)
+    scope_keyword_matches = _in_scope_keyword_match_count(q)
+    log.info("intent=%s in_scope=%s scope_keyword_matches=%s query=%s", intent, in_scope, scope_keyword_matches, q[:200] if q else "")
+    if category:
+        log.debug("query [%s] intent=%s: %s", category, intent, q)
+    else:
+        log.debug("query intent=%s: %s", intent, q)
+
+    if not in_scope:
+        log.info("out_of_scope; returning SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE")
+        answer = SIMPLE_RAG_OUT_OF_SCOPE_MESSAGE
+        if on_chunk is not None:
+            try:
+                on_chunk(answer)
+            except Exception:
+                pass
+        return {"answer": answer, "sources": []}
+
     if top_k is not None:
         k = top_k
     elif intent == QUERY_INTENT_SYNTHESIS:
@@ -1249,8 +1254,8 @@ def answer_query(
         k = TOP_K_DEFINITION
     else:
         k = SIMPLE_RAG_TOP_K
-    # Enforce min 5 and max 10 chunks for retrieval (and thus sources)
-    k = max(5, min(10, k))
+    # Fetch more chunks so after dedup we get at least 5 distinct sources when possible; cap at 10 for UI
+    k = max(15, min(20, k))
     # For definition-style queries (e.g. "what is SAMA?"), expand acronym so retrieval finds definition chunks
     is_def, term = _is_definition_style_query(q)
     if is_def and term:
