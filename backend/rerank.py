@@ -132,6 +132,8 @@ def _extract_query_entity(query: str) -> str:
     if "?" in q:
         q = q.split("?")[0].strip()
     q_lower = q.lower()
+    # Normalize "what's" so entity is the term (e.g. "sama") not the whole phrase
+    q_lower = q_lower.replace("what's", "what is").replace("whats", "what is")
     for prefix in ("what is ", "what is the ", "define ", "definition of ", "ما هو ", "ما هي ", "ما المقصود بـ ", "ما المعنى "):
         if q_lower.startswith(prefix):
             q = q[len(prefix):].strip()

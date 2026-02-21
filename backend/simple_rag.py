@@ -1483,6 +1483,7 @@ def answer_query(
                 log.info("definition_post_fill: replaced not_found with acronym definition for '%s'", term)
 
     # Fallback: for "what is SAMA?" / "what is NORA?" use fixed one-liner when not_found or when answer is not a proper definition
+    answer_from_acronym_fallback = False
     if intent == QUERY_INTENT_FACT_DEFINITION:
         is_def, term = _is_definition_style_query(q)
         if is_def and term:
@@ -1505,11 +1506,13 @@ def answer_query(
                         )
                 if use_fallback:
                     answer = DEFINITION_ACRONYM_FALLBACK[term_lower]
+                    answer_from_acronym_fallback = True
                     log.info("definition_acronym_fallback: set answer for '%s'", term_lower)
 
     _grounding_confidence: float = 1.0
     # Semantic grounding (optional): pass / soft_fail (keep + source) / hard_fail (not_found)
-    if USE_SEMANTIC_GROUNDING and not _is_not_found_answer(answer):
+    # Do not override when answer came from SAMA/NORA acronym fallback (authoritative one-liner).
+    if USE_SEMANTIC_GROUNDING and not _is_not_found_answer(answer) and not answer_from_acronym_fallback:
         decision, sem_score, soft_msg = grounding_decision(answer, context_text, chunks, intent, is_arabic_query=_is_arabic_query(q))
         _grounding_confidence = sem_score
         if decision == "hard_fail":
@@ -1522,7 +1525,8 @@ def answer_query(
         elif decision == "soft_fail" and soft_msg and "(Source:" not in answer:
             answer = answer.rstrip().rstrip(".") + soft_msg
     # Literal grounding: fact_definition/metadata use relaxed; synthesis and others use strict
-    if not _is_not_found_answer(answer):
+    # Do not override when answer came from SAMA/NORA acronym fallback.
+    if not _is_not_found_answer(answer) and not answer_from_acronym_fallback:
         if intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
             if not _is_answer_loosely_grounded(answer, context_text):
                 if has_citation_and_similarity or skip_not_found_if_high_retrieval:
@@ -1604,16 +1608,24 @@ def answer_query(
             else:
                 log.info("retrieved_but_not_used: %d of %d chunks not cited in answer", not_used, len(chunks))
     snippet_limit = SNIPPET_CHAR_LIMIT
-    sources = [
-        {
-            "document_name": row.get("document_name"),
+    # Deduplicate by (document_name, page_start, page_end) so the UI shows distinct sources, not the same page repeated
+    seen_keys: set[tuple[str, int, int]] = set()
+    sources: list[dict[str, Any]] = []
+    for row in chunks:
+        doc = row.get("document_name") or ""
+        start = int(row.get("page_start") or 0)
+        end = int(row.get("page_end") or 0)
+        key = (doc, start, end)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        sources.append({
+            "document_name": doc,
             "page_start": row.get("page_start"),
             "page_end": row.get("page_end"),
             "article_id": row.get("article_id") or row.get("article_number") or row.get("article"),
             "snippet": (row.get("snippet") or (row.get("content") or "")[:snippet_limit]),
-        }
-        for row in chunks
-    ]
+        })
     # Keep sources whenever we have chunks so the UI can show "sources considered" even when answer is not_found
     # (removed: if _is_not_found_answer(answer): sources = [])
     out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
