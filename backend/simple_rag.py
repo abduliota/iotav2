@@ -1203,6 +1203,44 @@ def answer_query(
                 pass
         return {"answer": answer, "sources": []}
 
+    # Hard-coded SAMA/NORA definition: return canonical one-liner without model or extractive builder
+    is_def, term = _is_definition_style_query(q)
+    term_clean = re.sub(r"[?!.,;:]+$", "", term.strip().lower()) if term else ""
+    if is_def and term_clean in ("sama", "nora") and term_clean in DEFINITION_ACRONYM_FALLBACK:
+        answer = DEFINITION_ACRONYM_FALLBACK[term_clean]
+        log.info("hard_coded_definition: returning canonical definition for '%s'", term_clean)
+        sources: list[dict[str, Any]] = []
+        try:
+            expansion = ACRONYM_EXPANSIONS.get(term_clean, "")
+            q_embed = normalize_query_for_embedding(q + " " + expansion) if expansion else normalize_query_for_embedding(q)
+            query_embedding = embed_query(q_embed)
+            chunks_def = fetch_chunks(query_embedding, limit=10)
+            seen_keys_def: set[tuple[str, int, int]] = set()
+            for row in chunks_def:
+                doc = row.get("document_name") or ""
+                start = int(row.get("page_start") or 0)
+                end = int(row.get("page_end") or 0)
+                key = (doc, start, end)
+                if key in seen_keys_def:
+                    continue
+                seen_keys_def.add(key)
+                sources.append({
+                    "document_name": doc,
+                    "page_start": row.get("page_start"),
+                    "page_end": row.get("page_end"),
+                    "article_id": row.get("article_id") or row.get("article_number") or row.get("article"),
+                    "snippet": (row.get("snippet") or (row.get("content") or "")[:SNIPPET_CHAR_LIMIT]),
+                })
+            sources = sources[:10]
+        except Exception as e:
+            log.debug("hard_coded_definition: fetch sources failed, returning empty: %s", e)
+        if on_chunk is not None:
+            try:
+                on_chunk(answer)
+            except Exception:
+                pass
+        return {"answer": answer, "sources": sources}
+
     if top_k is not None:
         k = top_k
     elif intent == QUERY_INTENT_SYNTHESIS:
@@ -1211,6 +1249,8 @@ def answer_query(
         k = TOP_K_DEFINITION
     else:
         k = SIMPLE_RAG_TOP_K
+    # Enforce min 5 and max 10 chunks for retrieval (and thus sources)
+    k = max(5, min(10, k))
     # For definition-style queries (e.g. "what is SAMA?"), expand acronym so retrieval finds definition chunks
     is_def, term = _is_definition_style_query(q)
     if is_def and term:
@@ -1626,6 +1666,8 @@ def answer_query(
             "article_id": row.get("article_id") or row.get("article_number") or row.get("article"),
             "snippet": (row.get("snippet") or (row.get("content") or "")[:snippet_limit]),
         })
+    # Cap at 10 sources for the UI
+    sources = sources[:10]
     # Keep sources whenever we have chunks so the UI can show "sources considered" even when answer is not_found
     # (removed: if _is_not_found_answer(answer): sources = [])
     out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
