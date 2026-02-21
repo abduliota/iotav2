@@ -37,7 +37,7 @@ LEGAL_TERM_MAP: dict[str, str] = {
     "basel committee": "bcbs",
     "cbb": "central bank",
     "sama": "saudi arabian monetary authority",
-    "nora": "national regulatory authority",
+    "nora": "national regulatory authority for islamic banks saudi arabia",
     "bcr": "banking control law",
     "banking control law": "bcr",
 }
@@ -50,7 +50,7 @@ ACRONYM_EXPANSIONS: dict[str, str] = {
     "bcbs": "basel committee on banking supervision",
     "cbb": "central bank",
     "sama": "saudi arabian monetary authority",
-    "nora": "national regulatory authority",
+    "nora": "national regulatory authority for islamic banks saudi arabia",
     "bcr": "banking control regulation",
     "rr": "regulation",
     "cir": "circular",

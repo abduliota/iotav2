@@ -484,6 +484,8 @@ def _classify_query_intent(query: str) -> str:
     if not query or not query.strip():
         return QUERY_INTENT_OTHER
     q = query.strip().lower()
+    # Normalize contractions so "what's" / "whats" match definition patterns
+    q = q.replace("what's", "what is").replace("whats", "what is")
     for p in _METADATA_PATTERNS:
         if p in q:
             return QUERY_INTENT_METADATA
@@ -587,6 +589,32 @@ def _reorder_arabic_first(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             without_ar.append(c)
     return with_ar + without_ar
+
+
+def _reorder_chunks_query_term_first(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """Put chunks that contain the query's main term (e.g. SAMA, NORA) first to improve relevance."""
+    if not chunks or not query or not query.strip():
+        return chunks
+    q = query.strip().lower()
+    # Resolve term: definition-style term, or explicit acronyms that often need boosting
+    term: str | None = None
+    is_def, def_term = _is_definition_style_query(query)
+    if is_def and def_term:
+        term = def_term.strip().lower()
+    if not term and ("sama" in q or "nora" in q):
+        term = "sama" if "sama" in q else "nora"
+    if not term or len(term) < 2:
+        return chunks
+    with_term: list[dict[str, Any]] = []
+    without_term: list[dict[str, Any]] = []
+    for c in chunks:
+        content = (c.get("content") or "").lower()
+        title = (c.get("section_title") or "").lower()
+        if term in content or term in title:
+            with_term.append(c)
+        else:
+            without_term.append(c)
+    return with_term + without_term
 
 
 def _synthesis_title_match_confidence(chunks: list[dict[str, Any]], query: str) -> float:
@@ -1231,6 +1259,7 @@ def answer_query(
         chunks = rerank_chunks(q, chunks, top_n=k, preferred_doc_names=preferred_doc_names, intent=intent)
     if _is_arabic_query(q) and chunks:
         chunks = _reorder_arabic_first(chunks)
+    chunks = _reorder_chunks_query_term_first(chunks, q)
     log.debug("retrieval: %d chunks", len(chunks))
     # Phase 6.2: Arabic entity presence – at least one top chunk should contain the query entity
     if ENABLE_ARABIC_ENTITY_PRESENCE_CHECK and _is_arabic_query(q) and chunks:
