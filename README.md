@@ -227,6 +227,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# (Optional) For NCA regulatory PDF scraper fallback: install Chromium for Playwright
+# playwright install chromium
+
 # Configure environment variables
 cp .env.example .env
 # Edit .env with your credentials:
