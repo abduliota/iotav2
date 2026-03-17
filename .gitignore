@@ -48,6 +48,31 @@ documents.csv
 Core/
 pdfs/
 
+# IOTAV3 local artifacts
+IOTAV3/docs/
+IOTAV3/backend/__pycache__/
+IOTAV3/backend/iotaenv/
+IOTAV3/backend/.env
+IOTAV3/backend/rag/__pycache__/
+
+# IOTAV3 backend (Python)
+IOTAV3/backend/.env.*
+IOTAV3/backend/.pytest_cache/
+IOTAV3/backend/.mypy_cache/
+IOTAV3/backend/.ruff_cache/
+IOTAV3/backend/output/
+IOTAV3/backend/archive/
+IOTAV3/backend/**/test_rag_results_*.log
+
+# IOTAV3 frontend (Next.js)
+IOTAV3/frontend/node_modules/
+IOTAV3/frontend/.next/
+IOTAV3/frontend/out/
+IOTAV3/frontend/build/
+IOTAV3/frontend/.vercel/
+IOTAV3/frontend/.turbo/
+IOTAV3/frontend/.env*.local
+
 # Misc
 *.tsbuildinfo
 next-env.d.ts

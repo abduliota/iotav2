@@ -28,21 +28,18 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
   return (
     <div className="border-t border-border p-4 bg-card transition-colors duration-200">
       <div className="flex gap-2 items-center">
-        <div className="flex-1 flex items-center gap-0 border border-border bg-[var(--input)] cyber-chamfer-sm focus-within:border-accent focus-within:shadow-neon-sm transition-all duration-150">
-          <span className="pl-3 text-accent font-mono select-none" aria-hidden="true">
-            &gt;
-          </span>
+        <div className="flex-1 flex items-center gap-2 border border-input bg-background rounded-full pl-4 pr-1 py-1 focus-within:ring-2 focus-within:ring-ring focus-within:border-ring transition-shadow duration-200 shadow-sm">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={disabled}
             placeholder="Type your message... (Enter to send, Shift+Enter for newline)"
-            className="flex-1 min-w-0 pl-2 pr-4 py-2 bg-transparent border-0 resize-none focus:outline-none focus:ring-0 disabled:opacity-50 text-foreground placeholder:text-muted-foreground font-mono text-sm tracking-wide"
+            className="flex-1 min-w-0 py-2 bg-transparent border-0 resize-none focus:outline-none focus:ring-0 disabled:opacity-50 text-foreground placeholder:text-muted-foreground text-sm"
             rows={1}
           />
         </div>
-        <Button onClick={handleSubmit} disabled={disabled || !input.trim()}>
+        <Button onClick={handleSubmit} disabled={disabled || !input.trim()} className="rounded-full px-6">
           Send
         </Button>
       </div>

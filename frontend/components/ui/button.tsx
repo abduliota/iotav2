@@ -3,30 +3,30 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium font-mono uppercase tracking-wider transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 hover:-translate-y-[1px] active:scale-95",
   {
     variants: {
       variant: {
         default:
-          "bg-transparent border-2 border-accent text-accent cyber-chamfer hover:bg-accent hover:text-accent-foreground hover:shadow-neon focus-visible:shadow-neon-sm",
+          "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow-md",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-sm border border-destructive",
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-sm hover:shadow-md",
         outline:
-          "border border-border bg-transparent rounded-sm hover:border-accent hover:text-accent hover:shadow-neon-sm",
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground shadow-sm",
         secondary:
-          "bg-transparent border-2 border-secondary text-secondary cyber-chamfer hover:bg-secondary hover:text-secondary-foreground hover:shadow-neon-secondary focus-visible:shadow-neon-secondary-sm",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80 shadow-sm hover:shadow-md",
         ghost:
-          "border-0 rounded-sm hover:bg-muted hover:text-foreground",
+          "hover:bg-accent hover:text-accent-foreground hover:shadow-none hover:-translate-y-0 active:scale-100",
         link:
-          "text-accent underline-offset-4 hover:underline rounded-sm",
+          "text-primary underline-offset-4 hover:underline hover:shadow-none hover:-translate-y-0 active:scale-100",
         glitch:
-          "bg-accent text-accent-foreground border-2 border-accent cyber-chamfer cyber-glitch hover:shadow-neon focus-visible:shadow-neon",
+          "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow-md", // Deprecated variant, falling back to default styling
       },
       size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-9 rounded-sm px-3",
-        lg: "h-11 rounded-sm px-8",
-        icon: "h-10 w-10 rounded-sm",
+        default: "h-10 px-4 py-2 rounded-md",
+        sm: "h-9 rounded-md px-3",
+        lg: "h-11 rounded-md px-8",
+        icon: "h-10 w-10 rounded-md",
       },
     },
     defaultVariants: {
@@ -38,7 +38,7 @@ const buttonVariants = cva(
 
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  VariantProps<typeof buttonVariants> {
   asChild?: boolean
 }
 

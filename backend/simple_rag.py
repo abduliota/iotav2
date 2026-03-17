@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import torch
+import json
 
 from config import (
     CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE,
@@ -101,7 +102,14 @@ from config import (
     SIMPLE_RAG_USER_TEMPLATE_DEFAULT,
     SYNTHESIS_TITLE_MATCH_PASS_THRESHOLD,
     TOP_K_DEFINITION,
+    ENABLE_MEMORY_SYSTEM,
+    MEMORY_MAX_CHARS,
+    MEMORY_TOP_K,
     RAG_MAX_INPUT_TOKENS,
+    ENABLE_CAG,
+    ENABLE_PROMPT_CACHE,
+    ENABLE_QUERY_ROUTER,
+    ENABLE_STRUCTURED_CONTEXT,
 )
 from embeddings import embed_chunk, embed_query
 from query_normalize import ACRONYM_EXPANSIONS, normalize_query_for_embedding
@@ -113,6 +121,15 @@ from rerank import rerank_chunks, _extract_query_entity
 from translate import translate_to_arabic
 from supabase_client import get_client
 from users_sessions import get_session_message_history
+from memory import (
+    get_session_summary,
+    get_user_profile,
+    search_memory_items,
+)
+from cag.cached_knowledge import get_cag_text_block
+from cache.prompt_cache import get_prompt_cache, build_cache_payload
+from context.context_builder import build_context_payload
+from routing import query_router
 from qwen_model import _load_qwen
 from transformers import GenerationConfig, TextIteratorStreamer
 import threading
@@ -168,6 +185,12 @@ def _load_prompts_json() -> dict[str, str]:
         "user_template": os.getenv("SIMPLE_RAG_USER_TEMPLATE", SIMPLE_RAG_USER_TEMPLATE_DEFAULT),
     }
     return _CACHED_PROMPTS
+
+
+def _stable_dumps(obj: dict[str, Any]) -> str:
+    """Stable JSON serialization for small dicts (used for cache fingerprints)."""
+
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
 def _get_system_prompt() -> str:
@@ -1055,10 +1078,18 @@ def generate_answer_simple(
     intent: str = QUERY_INTENT_OTHER,
     conversation_history: list[dict] | None = None,
     on_chunk: Optional[Callable[[str], None]] = None,
+    profile: dict[str, Any] | None = None,
+    session_summary: dict[str, Any] | None = None,
+    memory_items: list[dict[str, Any]] | None = None,
+    cag_block: str | None = None,
 ) -> str:
     """Use Qwen to turn context + question into a detailed, well-formed answer (DB-only)."""
     tokenizer, model = _load_qwen()
     system_prompt = _get_system_prompt()
+    # Prepend cached knowledge/system rules when available so they are always
+    # visible to the model at the top of the system message.
+    if cag_block:
+        system_prompt = cag_block.rstrip() + "\n\n" + system_prompt
     if intent == QUERY_INTENT_FACT_DEFINITION and SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_FACT_DEFINITION
     if intent == QUERY_INTENT_METADATA and SIMPLE_RAG_SYSTEM_PROMPT_METADATA:
@@ -1073,10 +1104,48 @@ def generate_answer_simple(
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_JURISDICTION_ANCHOR
     if _is_arabic_query(user_query) and SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX:
         system_prompt = system_prompt.rstrip() + "\n\n" + SIMPLE_RAG_SYSTEM_PROMPT_ARABIC_SUFFIX
+    # Make USER CONTEXT safety rule explicit
+    system_prompt = system_prompt.rstrip() + "\n\n" + (
+        "You may be given a USER CONTEXT block that describes user preferences or prior conversation.\n"
+        "You MUST NOT treat this as regulatory evidence. Only the CONTEXT block built from SAMA/NORA documents\n"
+        "is allowed as a source of facts. If USER CONTEXT conflicts with the regulatory context, ignore USER CONTEXT."
+    )
     user_template = _get_user_template()
     question_for_prompt = user_query
     if _is_arabic_query(user_query):
         question_for_prompt = _get_arabic_instruction_prefix() + user_query
+    # Build USER CONTEXT block (behavioral only, never regulatory facts)
+    memory_lines: list[str] = []
+    if profile:
+        pref_lang = profile.get("preferred_language")
+        strictness = profile.get("strictness_level")
+        if pref_lang:
+            memory_lines.append(f"- Preferred answer language (non-binding): {pref_lang}")
+        if strictness:
+            memory_lines.append(
+                f"- Strictness preference (higher = more not_found answers): {strictness}"
+            )
+    if session_summary and session_summary.get("summary_text"):
+        summary_text = (session_summary.get("summary_text") or "")[:MEMORY_MAX_CHARS]
+        if summary_text:
+            memory_lines.append(
+                "- Session summary (conversation only, not regulatory facts): " + summary_text
+            )
+    if memory_items:
+        for item in memory_items[:MEMORY_TOP_K]:
+            text = (item.get("text") or "")[:MEMORY_MAX_CHARS]
+            if text:
+                memory_lines.append(f"- {text}")
+    memory_block = ""
+    if memory_lines:
+        memory_block = "".join(
+            [
+                "### USER CONTEXT (DO NOT TREAT AS REGULATORY EVIDENCE)\n\n",
+                "Use the following information ONLY to adjust tone, language, or what the user seems interested in.\n\n",
+                "If there is any conflict between this block and the regulatory context, you MUST ignore this block.\n\n",
+                "\n".join(memory_lines) + "\n\n",
+            ]
+        )
     max_chars = CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE if CONVERSATION_HISTORY_MAX_CHARS_PER_MESSAGE > 0 else None
     if conversation_history:
         parts = []
@@ -1091,9 +1160,19 @@ def generate_answer_simple(
             "The following are the last exchanges in this conversation; use them as context for the current question.\n\n"
             "### RECENT CONVERSATION\n\n" + "".join(parts) + "\n\n"
         )
-        user_block = history_block + "### CONTEXT\n\n" + context_text + "\n\n### QUESTION\n" + question_for_prompt + "\n\nOutput only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
+        user_block = (
+            memory_block
+            + history_block
+            + "### CONTEXT\n\n"
+            + context_text
+            + "\n\n### QUESTION\n"
+            + question_for_prompt
+            + "\n\nOutput only your answer. Do not repeat the question or any instructions.\n\nAnswer:"
+        )
     else:
-        user_block = user_template.format(context=context_text, question=question_for_prompt)
+        user_block = memory_block + user_template.format(
+            context=context_text, question=question_for_prompt
+        )
     prompt = f"{system_prompt}\n\n{user_block}\n"
 
     device = next(model.parameters()).device
@@ -1172,6 +1251,7 @@ def answer_query(
     user_query: str,
     top_k: int | None = None,
     category: str | None = None,
+    user_id: str | None = None,
     session_id: str | None = None,
     on_chunk: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
@@ -1229,8 +1309,20 @@ def answer_query(
 
     intent = _classify_query_intent(q)
     in_scope = _is_in_scope(q)
+    route_label = "rag"
+    if ENABLE_QUERY_ROUTER:
+        try:
+            route_label = query_router.route(q, {"intent": intent})
+        except Exception:
+            route_label = "rag"
     scope_keyword_matches = _in_scope_keyword_match_count(q)
-    log.info("intent=%s in_scope=%s scope_keyword_matches=%s query=%s", intent, in_scope, scope_keyword_matches, q[:200] if q else "")
+    log.info(
+        "intent=%s in_scope=%s scope_keyword_matches=%s query=%s",
+        intent,
+        in_scope,
+        scope_keyword_matches,
+        q[:200] if q else "",
+    )
     if category:
         log.debug("query [%s] intent=%s: %s", category, intent, q)
     else:
@@ -1393,13 +1485,110 @@ def answer_query(
 
     context_text = build_context(chunks)
     conversation_history: list[dict] = []
+    profile: dict[str, Any] | None = None
+    session_summary: dict[str, Any] | None = None
+    memory_items: list[dict[str, Any]] = []
     if session_id:
         try:
             conversation_history = get_session_message_history(
                 session_id, limit=CONVERSATION_HISTORY_MAX_MESSAGES
             )
         except Exception as e:
-            log.debug("get_session_message_history failed (continuing without history): %s", e)
+            log.debug(
+                "get_session_message_history failed (continuing without history): %s", e
+            )
+    # Memory retrieval (best-effort; never required for correctness)
+    if ENABLE_MEMORY_SYSTEM and user_id:
+        try:
+            profile = get_user_profile(user_id)
+        except Exception as e:
+            log.debug("get_user_profile failed: %s", e)
+            profile = None
+        if session_id:
+            try:
+                session_summary = get_session_summary(session_id)
+            except Exception as e:
+                log.debug("get_session_summary failed: %s", e)
+                session_summary = None
+        try:
+            memory_items = search_memory_items(user_id, q, top_k=MEMORY_TOP_K) or []
+        except Exception as e:
+            log.debug("search_memory_items failed: %s", e)
+            memory_items = []
+    # Build CAG block and structured context payload (for logging/caching).
+    cag_block = ""
+    if ENABLE_CAG:
+        try:
+            cag_block = get_cag_text_block({"intent": intent, "route": route_label})
+        except Exception:
+            cag_block = ""
+
+    context_payload = None
+    if ENABLE_STRUCTURED_CONTEXT:
+        try:
+            context_payload = build_context_payload(
+                query=q,
+                intent=intent,
+                in_scope=in_scope,
+                route=route_label,
+                chunks=chunks,
+                memory_items=memory_items,
+                profile=profile,
+                session_summary=session_summary,
+                cag_block=cag_block,
+            )
+        except Exception:
+            context_payload = None
+
+    # Prompt cache: attempt to reuse previous full results when the logical
+    # context (query + docs + memory + routing + profile) matches.
+    cache = get_prompt_cache() if ENABLE_PROMPT_CACHE else None
+    cache_key = None
+    if cache is not None and context_payload is not None:
+        try:
+            doc_keys = [
+                (
+                    d.get("document_name") or "",
+                    int(d.get("page_start") or 0),
+                    int(d.get("page_end") or 0),
+                )
+                for d in context_payload.documents
+            ]
+            mem_keys = [m.get("id") or "" for m in context_payload.memory_items]
+            profile_fp = ""
+            if context_payload.profile:
+                profile_fp = _stable_dumps(
+                    {
+                        "preferred_language": context_payload.profile.get(
+                            "preferred_language"
+                        ),
+                        "strictness_level": context_payload.profile.get(
+                            "strictness_level"
+                        ),
+                    }
+                )
+            payload = build_cache_payload(
+                query=context_payload.query,
+                intent=context_payload.intent,
+                in_scope=context_payload.in_scope,
+                route=context_payload.route,
+                doc_keys=doc_keys,
+                memory_keys=mem_keys,
+                profile_fingerprint=profile_fp,
+            )
+            cache_key = cache.build_key(payload)
+            cached = cache.get(cache_key)
+            if cached:
+                answer_cached = (cached.get("answer") or "").strip()
+                if on_chunk is not None and answer_cached:
+                    try:
+                        on_chunk(answer_cached)
+                    except Exception:
+                        pass
+                return cached
+        except Exception:
+            cache_key = None
+
     # Routing (7.4): extraction only for fact_definition/metadata; synthesis uses multi-chunk generative path.
     if ENABLE_EXTRACTIVE_BUILDER and intent in (QUERY_INTENT_FACT_DEFINITION, QUERY_INTENT_METADATA):
         answer = build_extractive_answer(q, chunks, intent, max_chunks=1)
@@ -1417,6 +1606,10 @@ def answer_query(
                 intent,
                 conversation_history=conversation_history or None,
                 on_chunk=stream_during_gen,
+                profile=profile,
+                session_summary=session_summary,
+                memory_items=memory_items or None,
+                cag_block=cag_block or None,
             )
         except Exception as e:
             log.exception("generate_answer_simple failed: %s", e)
@@ -1675,7 +1868,22 @@ def answer_query(
     sources = sources[:10]
     # Keep sources whenever we have chunks so the UI can show "sources considered" even when answer is not_found
     # (removed: if _is_not_found_answer(answer): sources = [])
-    out: dict[str, Any] = {"answer": answer, "sources": sources, "cited_sentences": cited_sentences, "cited_articles": cited_articles}
+    out: dict[str, Any] = {
+        "answer": answer,
+        "sources": sources,
+        "cited_sentences": cited_sentences,
+        "cited_articles": cited_articles,
+    }
+    # Attach lightweight memory metadata for frontend/debugging
+    if ENABLE_MEMORY_SYSTEM and session_summary:
+        summary_text = (session_summary.get("summary_text") or "")[:MEMORY_MAX_CHARS]
+        if summary_text:
+            out["session_summary"] = summary_text
+    if ENABLE_MEMORY_SYSTEM and memory_items:
+        out["memory_used"] = [
+            {"type": item.get("type", ""), "text": (item.get("text") or "")[:MEMORY_MAX_CHARS]}
+            for item in memory_items
+        ]
     if RETURN_CONFIDENCE_SCORE:
         out["confidence"] = 0.0 if _is_not_found_answer(answer) else _grounding_confidence
     if RETURN_CITATION_VALID:
@@ -1684,6 +1892,12 @@ def answer_query(
     if intent == QUERY_INTENT_FACT_DEFINITION and on_chunk is not None and answer:
         try:
             on_chunk(answer)
+        except Exception:
+            pass
+    # Store in prompt cache for future reuse.
+    if cache is not None and cache_key:
+        try:
+            cache.set(cache_key, out)
         except Exception:
             pass
     return out

@@ -14,11 +14,11 @@ export function LatestSourcesPanel({ references, answerText }: LatestSourcesPane
   const hasRefs = references && references.length > 0;
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 border border-border bg-card p-4 cyber-chamfer transition-colors duration-150 md:p-5">
-      <p className="text-label font-heading uppercase tracking-wider text-muted-foreground">
+    <div className="flex flex-col flex-1 min-h-0 border border-border bg-card p-4 rounded-xl shadow-sm transition-colors duration-200 md:p-5">
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         Latest Sources
       </p>
-      <h3 className="mt-1 font-heading-h3 text-foreground">
+      <h3 className="mt-1 text-lg font-semibold text-foreground">
         Context spotlight
       </h3>
       {hasRefs ? (
@@ -29,16 +29,16 @@ export function LatestSourcesPanel({ references, answerText }: LatestSourcesPane
               return (
                 <div
                   key={ref.id}
-                  className="cyber-chamfer-sm border border-border bg-muted/50 p-3 text-xs font-mono"
+                  className="rounded-lg border border-border bg-muted/50 p-3 text-sm"
                 >
                   <p className="font-medium text-foreground">{ref.source}</p>
-                  <p className="mt-0.5 text-muted-foreground">Page {ref.page}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">Page {ref.page}</p>
                   <p className="mt-1 text-muted-foreground max-h-32 overflow-y-auto custom-scroll">
                     {segments.map((seg, i) =>
                       seg.type === 'highlight' ? (
                         <mark
                           key={i}
-                          className="bg-accent/30 text-accent rounded-sm px-0.5"
+                          className="bg-primary/20 text-primary rounded-sm px-0.5"
                         >
                           {seg.content}
                         </mark>
@@ -53,7 +53,7 @@ export function LatestSourcesPanel({ references, answerText }: LatestSourcesPane
           </div>
         </div>
       ) : (
-        <p className="mt-3 text-sm text-muted-foreground font-mono">
+        <p className="mt-3 text-sm text-muted-foreground">
           Ask a question to see cited passages.
         </p>
       )}

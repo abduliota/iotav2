@@ -47,7 +47,7 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
 
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-card border border-border cyber-chamfer p-6 w-full max-w-md shadow-neon-sm">
+      <div className="bg-card border border-border p-6 w-full max-w-md rounded-2xl shadow-lg">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-heading font-semibold uppercase tracking-wider text-foreground">
             {mode === 'signup' ? 'Sign Up' : 'Login'}
@@ -55,14 +55,14 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
           <button
             type="button"
             onClick={onClose}
-            className="text-muted-foreground hover:text-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card rounded-sm"
+            className="text-muted-foreground hover:text-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card rounded-md"
             aria-label="Close modal"
           >
             ✕
           </button>
         </div>
 
-        <p className="text-sm text-muted-foreground mb-6 font-mono">
+        <p className="text-sm text-muted-foreground mb-6">
           {mode === 'signup'
             ? 'Create an account with fingerprint authentication for unlimited prompts'
             : 'Login with your fingerprint to access unlimited prompts'}
@@ -73,9 +73,9 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
             <label htmlFor="auth-email" className="block text-label text-muted-foreground mb-2">
               Email
             </label>
-            <div className="flex border border-border bg-[var(--input)] cyber-chamfer-sm focus-within:border-accent focus-within:shadow-neon-sm transition-all duration-150">
-              <span className="pl-3 text-accent font-mono select-none self-center" aria-hidden="true">
-                &gt;
+            <div className="flex border border-input bg-background rounded-lg focus-within:ring-2 focus-within:ring-ring focus-within:border-ring transition-shadow duration-200">
+              <span className="pl-3 text-muted-foreground select-none self-center" aria-hidden="true">
+                @
               </span>
               <input
                 id="auth-email"
@@ -83,14 +83,14 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="your@email.com"
-                className="flex-1 min-w-0 pl-2 pr-4 py-2 bg-transparent border-0 text-foreground placeholder:text-muted-foreground font-mono text-sm tracking-wide focus:outline-none focus:ring-0 disabled:opacity-50"
+                className="flex-1 min-w-0 pl-2 pr-4 py-2 bg-transparent border-0 text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-0 disabled:opacity-50"
                 disabled={isLoading}
               />
             </div>
           </div>
 
           {error && (
-            <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-sm p-3 font-mono">
+            <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md p-3">
               {error}
             </div>
           )}
@@ -104,8 +104,8 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
             {isLoading
               ? 'Processing...'
               : mode === 'signup'
-              ? 'Sign Up with Fingerprint'
-              : 'Login with Fingerprint'}
+                ? 'Sign Up with Fingerprint'
+                : 'Login with Fingerprint'}
           </Button>
         </form>
 
@@ -116,7 +116,7 @@ export function AuthModal({ isOpen, onClose, onSuccess, onRegister, onLogin }: A
               setMode(mode === 'signup' ? 'login' : 'signup');
               setError('');
             }}
-            className="text-sm text-accent hover:text-accent/90 transition-colors font-mono focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
+            className="text-sm text-primary hover:text-primary/90 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md"
           >
             {mode === 'signup'
               ? 'Already have an account? Login'

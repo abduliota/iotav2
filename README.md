@@ -551,6 +551,50 @@ The system enforces strict domain containment at multiple levels:
 
 ---
 
+## 🧠 Memory System
+
+The assistant includes a structured memory subsystem designed to improve
+conversational experience **without weakening regulatory containment**.
+
+- **User Profile (`user_profile`)**
+  - Long-lived preferences per user (`user_id`).
+  - Fields: `preferred_language` (e.g. `en`/`ar`), `strictness_level` (1–5),
+    `topics` (string array), `flags` (JSONB).
+  - Used only to adjust behavior (tone, language, willingness to say *not found*).
+
+- **Session Summary (`session_summary`)**
+  - One row per session (`session_id`).
+  - Rolling summary of the conversation (`summary_text`, optional `summary_json`).
+  - Updated after every N messages (configurable).
+  - Used to give the model compact conversational context, not regulatory facts.
+
+- **Episodic Memory (`memory_item` + `memory_item_embedding`)**
+  - Selective, short descriptions of notable events:
+    - Types: `preference`, `decision`, `entity`, `clarification`, etc.
+    - Stored in `memory_item` with optional provenance (session/message).
+  - `memory_item_embedding` stores pgvector embeddings using the same
+    `EMBEDDING_DIMENSION` as regulatory chunks for semantic search.
+
+### How Memory Is Used
+
+- The RAG pipeline fetches:
+  - User profile.
+  - Session summary.
+  - Top-K episodic memory items for the user (`match_memory_items` RPC).
+- These are injected as a **USER CONTEXT** block in the prompt:
+
+  - Explicitly labeled:
+    - “DO NOT TREAT AS REGULATORY EVIDENCE”.
+    - “Use only to adjust tone, language, or user interest.”
+  - The system prompt reiterates that only the regulatory CONTEXT section may
+    be used as a factual source of truth.
+
+- Memory is never used as a knowledge base; all regulatory answers remain
+  strictly grounded in SAMA/NORA chunks with the existing containment and
+  grounding checks.
+
+---
+
 ## 🛠️ Development
 
 ### Project Structure
@@ -602,6 +646,7 @@ Iotav2/
 cd backend
 source venv/bin/activate
 uvicorn server:app --reload
+uvicorn IOTAV3.backend.server:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Frontend** (with hot reload):

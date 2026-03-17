@@ -48,24 +48,28 @@ module.exports = {
           hover: 'var(--sidebar-hover)',
           active: 'var(--sidebar-active)',
         },
+        success: 'var(--success)',
       },
       borderRadius: {
         lg: 'var(--radius)',
-        md: 'var(--radius)',
+        md: 'calc(var(--radius) - 2px)',
         sm: 'var(--radius-sm)',
       },
       boxShadow: {
-        'neon-sm': 'var(--box-shadow-neon-sm)',
-        neon: 'var(--box-shadow-neon)',
-        'neon-lg': 'var(--box-shadow-neon-lg)',
-        'neon-secondary': 'var(--box-shadow-neon-secondary)',
-        'neon-secondary-sm': 'var(--box-shadow-neon-secondary-sm)',
-        'neon-tertiary': 'var(--box-shadow-neon-tertiary)',
-        'neon-tertiary-sm': 'var(--box-shadow-neon-tertiary-sm)',
+        'soft': '0 4px 20px -2px rgba(0, 0, 0, 0.05)',
       },
       fontFamily: {
-        mono: ['var(--font-mono)', 'JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
-        heading: ['var(--font-heading)', 'Orbitron', 'Share Tech Mono', 'monospace'],
+        sans: ['ui-sans-serif', 'system-ui', 'sans-serif', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', 'monospace'],
+      },
+      keyframes: {
+        'fade-in-up': {
+          '0%': { opacity: '0', transform: 'translateY(10px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 0.4s ease-out forwards',
       },
     },
   },

@@ -42,7 +42,7 @@ export default function Home() {
           setUserIdState(id);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -78,10 +78,10 @@ export default function Home() {
     let chat: Chat;
 
     if (!currentChat) {
-      const title = message.role === 'user' 
-        ? message.content.slice(0, 50) 
+      const title = message.role === 'user'
+        ? message.content.slice(0, 50)
         : 'New Chat';
-      
+
       chat = {
         id: uuidv4(),
         title,
@@ -138,14 +138,18 @@ export default function Home() {
     saveChats(trimmed);
   }, [chats]);
 
-  const latestMessageWithRefs = currentChat?.messages
-    ? [...currentChat.messages].reverse().find((m) => m.role === 'assistant' && m.references?.length)
+  const latestAssistantMessage = currentChat?.messages
+    ? [...currentChat.messages].reverse().find((m) => m.role === 'assistant')
+    : null;
+  const latestMessageWithRefs = latestAssistantMessage && latestAssistantMessage.references?.length
+    ? latestAssistantMessage
     : null;
   const latestRefs = latestMessageWithRefs?.references ?? null;
   const latestAnswerText = latestMessageWithRefs?.content ?? undefined;
+  const latestSessionSummary = latestAssistantMessage?.sessionSummary ?? undefined;
 
   return (
-    <div className="flex h-screen bg-background text-foreground transition-colors duration-200 scanlines relative">
+    <div className="flex h-screen bg-background text-foreground transition-colors duration-200 relative">
       {/* Desktop sidebar - ChatGPT style, 260px */}
       <aside className="hidden md:flex md:flex-col w-[260px] shrink-0 border-r border-border bg-sidebar-bg transition-[background-color] duration-200">
         <div className="flex items-center justify-between gap-2.5 px-3 py-3 border-b border-border">
@@ -264,7 +268,7 @@ export default function Home() {
         )}
 
         {/* Regulation AI dashboard: summary card + two-column chat/sources */}
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden cyber-grid">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-muted/10">
           <div className="mx-auto w-full max-w-[1200px] flex flex-1 min-h-0 flex-col px-4 py-4 md:px-6 md:py-6">
             <SummaryCard
               rightSlot={
@@ -295,7 +299,7 @@ export default function Home() {
               }
             />
             <div className="mt-6 flex flex-1 min-h-0 gap-4 md:gap-6">
-              <div className="flex-1 min-h-0 min-w-0 flex flex-col border border-border bg-card cyber-chamfer-sm overflow-hidden">
+              <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                 {currentChat ? (
                   <ChatInterface
                     key={currentChat.id}
@@ -320,7 +324,11 @@ export default function Home() {
                 )}
               </div>
               <div className="hidden md:flex md:flex-col w-72 shrink-0 min-h-0 lg:w-80">
-                <LatestSourcesPanel references={latestRefs} answerText={latestAnswerText} />
+                <LatestSourcesPanel
+                  references={latestRefs}
+                  answerText={latestAnswerText}
+                  sessionSummary={latestSessionSummary}
+                />
               </div>
             </div>
           </div>
@@ -329,7 +337,7 @@ export default function Home() {
         <AuthModal
           isOpen={showAuthModal}
           onClose={() => setShowAuthModal(false)}
-          onSuccess={() => {}}
+          onSuccess={() => { }}
           onRegister={register}
           onLogin={login}
         />

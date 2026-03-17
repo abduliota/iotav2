@@ -13,6 +13,10 @@ export interface Message {
   timestamp: Date;
   /** Backend message_id for feedback (session_messages.message_id). */
   messageId?: string;
+  /** Optional session summary text returned with this assistant message. */
+  sessionSummary?: string;
+  /** Optional list of memory items used when generating this answer (debug/inspection only). */
+  memoryUsed?: { type: string; text: string }[];
 }
 
 export interface Chat {

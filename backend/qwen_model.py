@@ -1,6 +1,6 @@
 """Qwen 1.8B Instruct generation layer (Stage 4).
 
-Loads Qwen1.5-1.8B-Chat (or QWEN_MODEL from config) in 4-bit and exposes a
+Loads Qwen1.5-1.8B-Chat (or QWEN_MODEL from config) in fp16 on GPU and exposes a
 deterministic generate_answer() function that follows the strict compliance
 system prompt defined in Core/06_generation_layer.md.
 """
@@ -9,15 +9,22 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from config import ALLOW_BASED_ON_CONTEXT_PROMPT_LINE, APP_BRAND_NAME, QWEN_MODEL, RAG_MAX_INPUT_TOKENS
 
+# Suppress "Special tokens have been added" warning during inference
+warnings.filterwarnings("ignore", message="Special tokens have been added")
+
 # HF token for gated models (set HF_TOKEN or HUGGING_FACE_HUB_TOKEN)
 _HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+
+# Debug: when DEBUG_SECTION_TITLE=1, print raw output for first 2 calls
+_DEBUG_SECTION_TITLE_COUNT = 0
 
 
 _tokenizer: Optional[AutoTokenizer] = None
@@ -25,7 +32,7 @@ _model: Optional[AutoModelForCausalLM] = None
 
 
 def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
-    """Lazy-load Qwen 1.8B Instruct model and tokenizer in 4-bit on single GPU (persistent)."""
+    """Lazy-load Qwen 1.8B Instruct model and tokenizer in fp16 on GPU (persistent)."""
     global _tokenizer, _model
     if _tokenizer is not None and _model is not None:
         return _tokenizer, _model
@@ -36,92 +43,20 @@ def _load_qwen() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
         token=_HF_TOKEN,
     )
 
-    # 4-bit quantization; 1.8B fits easily in ~6GB VRAM (e.g. RTX 4050 Laptop)
-    # Ensure CUDA is available
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available. GPU is required for quantization.")
-    
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-    )
-    # Load quantized model - workaround: patch PreTrainedModel.to() to skip for quantized models
-    # bitsandbytes already places quantized models on GPU, so .to() calls should be no-ops
-    import transformers.modeling_utils as modeling_utils
-    original_to = modeling_utils.PreTrainedModel.to
-    
-    # Flag to track that we're loading a quantized model
-    _loading_quantized = [True]  # Use list to allow modification in nested scope
-    
-    def patched_to(self, *args, **kwargs):
-        # During quantized model loading, always skip .to() calls
-        # This prevents errors when dispatch_model tries to call .to() before
-        # quantization attributes are fully set
-        if _loading_quantized[0]:
-            return self
-        
-        # After loading, check if model is quantized using multiple indicators
-        if (hasattr(self, 'hf_quantizer') and self.hf_quantizer is not None) or \
-           (hasattr(self, 'quantization_config') and self.quantization_config is not None) or \
-           (hasattr(self, '_hf_quantizer') and self._hf_quantizer is not None):
-            return self
-        
-        # Check for BitsAndBytes modules as fallback indicator
-        if hasattr(self, 'named_modules'):
-            try:
-                for name, module in self.named_modules():
-                    module_type = str(type(module))
-                    if 'BitsAndBytes' in module_type or 'bnb' in module_type.lower():
-                        return self
-            except Exception:
-                pass  # If check fails, proceed with original .to()
-        
-        # Non-quantized model - use original .to()
-        return original_to(self, *args, **kwargs)
-    
-    modeling_utils.PreTrainedModel.to = patched_to
-    
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            QWEN_MODEL,
-            trust_remote_code=True,
-            quantization_config=bnb_config,
-            torch_dtype=torch.float16,
-            device_map="auto",  # Use device_map="auto" to handle quantization properly
-            token=_HF_TOKEN,
-        )
-    finally:
-        # Restore original .to() method and reset flag
-        modeling_utils.PreTrainedModel.to = original_to
-        _loading_quantized[0] = False
+        raise RuntimeError("CUDA is not available. GPU is required for inference.")
 
-    # RoPE (cos/sin) and other buffers were created on CPU and never moved because
-    # patched .to() is a no-op for quantized models. Move each module's buffers to
-    # that module's parameter device so cos[position_ids] in Qwen2 doesn't crash.
-    _move_buffers_to_module_device(model)
+    model = AutoModelForCausalLM.from_pretrained(
+        QWEN_MODEL,
+        trust_remote_code=True,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        token=_HF_TOKEN,
+    )
 
     _tokenizer = tokenizer
     _model = model
     return tokenizer, model
-
-
-def _move_buffers_to_module_device(module: torch.nn.Module) -> None:
-    """Move each submodule's buffers to the same device as that submodule's parameters.
-    Modules with only buffers (e.g. Qwen2RotaryEmbedding) are moved to the root model's
-    device. Fixes RoPE (cos_cached/sin_cached) left on CPU when PreTrainedModel.to()
-    is patched during quantized load."""
-    root_device = next(module.parameters()).device
-    for m in module.modules():
-        bufs = list(m.buffers(recurse=False))
-        if not bufs:
-            continue
-        params = list(m.parameters(recurse=False))
-        device = next(m.parameters(recurse=False)).device if params else root_device
-        for buf in bufs:
-            if buf.device != device:
-                buf.data = buf.data.to(device)
 
 
 def _build_system_prompt() -> str:
@@ -298,6 +233,92 @@ def _keep_last_substantive_block(text: str) -> str:
         if citation_pattern.search(b) or len(b) > short_no_info:
             return b
     return blocks[-1]
+
+
+def generate_section_title(content: str) -> str | None:
+    """Generate a short section title from regulatory content using Qwen 1.8B.
+
+    Returns stripped title (max 80 chars) or None on failure.
+    Uses chat template (apply_chat_template) so Qwen 1.5-Chat produces valid output.
+    Set DEBUG_SECTION_TITLE=1 to print raw output for first 2 calls.
+    """
+    global _DEBUG_SECTION_TITLE_COUNT
+    if not content or not content.strip():
+        return None
+    # Use first 800 chars - enough for title inference, less likely to confuse small model
+    truncated = content.strip()[:800]
+    try:
+        tokenizer, model = _load_qwen()
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Output only a short title (max 80 chars) for the given text. No explanation.",
+            },
+            {
+                "role": "user",
+                "content": f"Write a one-line title for this text (max 80 chars):\n\n{truncated}\n\nTitle:",
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        device = next(model.parameters()).device
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=min(1024, RAG_MAX_INPUT_TOKENS),
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=64,
+                do_sample=False,
+                repetition_penalty=1.15,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            )
+
+        # Decode only the newly generated tokens (exclude prompt)
+        new_tokens = outputs[0][input_len:]
+        decoded = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        # Fallback: if empty, decode without skip_special_tokens and strip Qwen tokens manually
+        if not decoded:
+            decoded_raw = tokenizer.decode(new_tokens, skip_special_tokens=False)
+            for sentinel in ("<|im_end|>", "<|endoftext|>", "<|im_start|>"):
+                decoded_raw = decoded_raw.replace(sentinel, "")
+            decoded = decoded_raw.strip()
+
+        if os.getenv("DEBUG_SECTION_TITLE") == "1" and _DEBUG_SECTION_TITLE_COUNT < 2:
+            _DEBUG_SECTION_TITLE_COUNT += 1
+            print(f"[DEBUG] raw decoded: {repr(decoded)}", flush=True)
+
+        # Extract title: after "Title:" if model echoed it, else use full decoded
+        answer = decoded.strip()
+        if "Title:" in answer:
+            answer = answer.rsplit("Title:", 1)[-1].strip()
+        answer = _strip_leakage(answer)
+        # Take first line only; avoid RAG-specific trailing stripping for short titles
+        answer = answer.split("\n")[0].strip()
+        answer = answer[:80].rstrip(".,;: ")
+
+        # Fallback: if empty after stripping, use raw decoded first line
+        if not answer and decoded:
+            fallback = decoded.split("\n")[0].strip()[:80].rstrip(".,;: ")
+            if fallback and len(fallback) > 2:
+                answer = fallback
+
+        if os.getenv("DEBUG_SECTION_TITLE") == "1" and _DEBUG_SECTION_TITLE_COUNT <= 2:
+            print(f"[DEBUG] final answer: {repr(answer)}", flush=True)
+
+        return answer if answer else None
+    except Exception:
+        return None
 
 
 def _is_garbled_answer(text: str) -> bool:

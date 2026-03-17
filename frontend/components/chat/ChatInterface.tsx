@@ -105,6 +105,8 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
             sources?: any[];
             user_id_created?: boolean;
             session_id_created?: boolean;
+            session_summary?: string;
+            memory_used?: { type: string; text: string }[];
           }
         | null = null;
       let done = false;
@@ -140,6 +142,8 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
               sources?: any[];
               user_id_created?: boolean;
               session_id_created?: boolean;
+              session_summary?: string;
+              memory_used?: { type: string; text: string }[];
             };
             meta = nextMeta;
             if (nextMeta.session_id && !sessionId) {
@@ -196,6 +200,8 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         snippet?: string;
         similarity?: number;
       }> = (meta && Array.isArray(meta.sources) ? (meta.sources as any[]) : []);
+      const sessionSummary = meta?.session_summary;
+      const memoryUsed = meta?.memory_used;
 
       const references: Reference[] = rawSources.map((s, i) => ({
         id: `${s.document_name ?? ''}-${s.page_start ?? 0}-${s.page_end ?? 0}-${i}`,
@@ -208,10 +214,12 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         prev.map(m =>
           m.id === assistantId
             ? {
-                ...m,
-                references,
-                ...(meta && meta.message_id && { messageId: meta.message_id }),
-              }
+              ...m,
+              references,
+              ...(meta && meta.message_id && { messageId: meta.message_id }),
+              ...(sessionSummary && { sessionSummary }),
+              ...(memoryUsed && { memoryUsed }),
+            }
             : m
         )
       );
@@ -224,6 +232,8 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
         references,
         timestamp: new Date(),
         ...(meta && meta.message_id && { messageId: meta.message_id }),
+        ...(sessionSummary && { sessionSummary }),
+        ...(memoryUsed && { memoryUsed }),
       });
 
       setIsLoading(false);
@@ -249,27 +259,28 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
       : [...localMessages];
 
   return (
-    <div className="flex h-full">
-      <div className="flex flex-col flex-1 bg-card text-foreground transition-colors duration-200 border border-border overflow-hidden cyber-chamfer-sm">
-        {/* Chat header - cyberpunk style */}
-        <div className="flex items-center justify-between px-4 py-4 border-b border-border">
-          <div className="flex flex-col gap-0.5 leading-tight">
-            <span className="text-label font-heading text-muted-foreground uppercase tracking-wider">
+    <div className="flex h-full p-4 md:p-6 lg:p-8">
+      <div className="flex flex-col flex-1 bg-card text-foreground transition-colors duration-200 border border-border overflow-hidden rounded-xl shadow-sm">
+        {/* Chat header - SaaS style */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border bg-muted/30">
+          <div className="flex flex-col gap-1 leading-tight">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Conversation
             </span>
-            <h2 className="font-heading-h2 text-foreground">
+            <h2 className="text-xl font-bold tracking-tight text-foreground">
               Assistant
             </h2>
-            <p className="text-sm text-muted-foreground font-mono">
+            <p className="text-sm text-muted-foreground">
               Responses cite the retrieved passages.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="rounded-sm border border-border bg-muted px-3 py-1 text-xs font-mono uppercase tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground flex items-center gap-1 shadow-sm">
+              <span className="h-1.5 w-1.5 rounded-full bg-success"></span>
               {allMessages.length} messages
             </span>
             <Tabs value={activeTab} onValueChange={setActiveTab} className="hidden">
-              <TabsList className="bg-muted/60 h-8 px-1 rounded-full">
+              <TabsList className="bg-muted h-8 px-1 rounded-full">
                 <TabsTrigger value="answer" className="rounded-full px-3 py-1 text-xs">
                   Answer
                 </TabsTrigger>
@@ -296,10 +307,10 @@ export function ChatInterface({ messages, onNewMessage, canSend = true, onLimitR
                     msg.role === 'assistant' &&
                     // Compare to the last assistant index in the array
                     index ===
-                      [...allMessages].reduceRight(
-                        (found, m, i) => (found === -1 && m.role === 'assistant' ? i : found),
-                        -1
-                      );
+                    [...allMessages].reduceRight(
+                      (found, m, i) => (found === -1 && m.role === 'assistant' ? i : found),
+                      -1
+                    );
 
                   return (
                     <AnimatedMessage

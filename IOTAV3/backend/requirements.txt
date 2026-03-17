@@ -1,0 +1,22 @@
+fastapi>=0.111.0
+uvicorn>=0.29.0
+python-dotenv>=1.0.0
+supabase>=2.0.0
+
+# Core transformer stack (GPU-capable when installed with CUDA wheels)
+transformers==4.40.0
+tokenizers>=0.15.0
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
+accelerate>=0.27.0
+bitsandbytes==0.41.3
+sentence-transformers>=2.2.0
+
+openai>=1.12.0
+numpy>=1.24.0,<2.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+playwright>=1.40.0
+redis
+

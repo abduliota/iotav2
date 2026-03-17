@@ -351,6 +351,12 @@ SELF_RAG_EXTRA_TOP_K = int(os.getenv("SELF_RAG_EXTRA_TOP_K", "10"))
 SELF_RAG_POOR_ANSWER_MIN_LEN = int(os.getenv("SELF_RAG_POOR_ANSWER_MIN_LEN", "30"))
 SELF_RAG_CITATION_PHRASES = ["page", "according to", "source", "sama", "nora"]
 
+# ---- High-level feature toggles for upgraded pipeline ----
+ENABLE_CAG = _env_bool("ENABLE_CAG", True)
+ENABLE_PROMPT_CACHE = _env_bool("ENABLE_PROMPT_CACHE", CACHE_ENABLED)
+ENABLE_QUERY_ROUTER = _env_bool("ENABLE_QUERY_ROUTER", True)
+ENABLE_STRUCTURED_CONTEXT = _env_bool("ENABLE_STRUCTURED_CONTEXT", True)
+
 # ---- Simple RAG (single-file pipeline): all settings from env/config, no hardcoding in code ----
 # Phase 7.5: lowering TOP_K reduces retrieved_but_not_used noise; retrieved_but_not_used is debug-only when ENABLE_RETRIEVED_BUT_NOT_USED_LOG
 SIMPLE_RAG_TOP_K = int(os.getenv("SIMPLE_RAG_TOP_K", "5"))
@@ -547,6 +553,15 @@ SEMANTIC_GROUNDING_THRESHOLD_OTHER = _env_float("SEMANTIC_GROUNDING_THRESHOLD_OT
 # Optional: minimum combined confidence (similarity + grounding + citation) to return answer; 0 = disabled
 MIN_CONFIDENCE_FOR_ANSWER = _env_float("MIN_CONFIDENCE_FOR_ANSWER", 0.0)
 SIMPLE_RAG_UNCERTAINTY_PHRASE = os.getenv("SIMPLE_RAG_UNCERTAINTY_PHRASE", "")
+# Memory system: user profiles, session summaries, and episodic memory items
+ENABLE_MEMORY_SYSTEM = _env_bool("ENABLE_MEMORY_SYSTEM", True)
+ENABLE_EPISODIC_MEMORY_WRITES = _env_bool("ENABLE_EPISODIC_MEMORY_WRITES", True)
+MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
+MEMORY_MAX_CHARS = int(os.getenv("MEMORY_MAX_CHARS", "400"))
+SESSION_SUMMARY_UPDATE_EVERY_N_MESSAGES = int(
+    os.getenv("SESSION_SUMMARY_UPDATE_EVERY_N_MESSAGES", "6")
+)
+MEMORY_ITEM_MIN_LENGTH = int(os.getenv("MEMORY_ITEM_MIN_LENGTH", "20"))
 # Dynamic top_k: if top chunk similarity below threshold, re-fetch with k * multiplier
 DYNAMIC_TOP_K_ENABLED = _env_bool("DYNAMIC_TOP_K_ENABLED", False)
 DYNAMIC_TOP_K_SIMILARITY_THRESHOLD = _env_float("DYNAMIC_TOP_K_SIMILARITY_THRESHOLD", 0.55)

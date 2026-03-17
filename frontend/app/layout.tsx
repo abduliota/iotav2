@@ -1,15 +1,17 @@
 import type { Metadata, Viewport } from 'next';
-import { Orbitron, JetBrains_Mono } from 'next/font/google';
+import { Inter, Roboto_Mono } from 'next/font/google';
 import './globals.css';
 
-const orbitron = Orbitron({
+const inter = Inter({
   subsets: ['latin'],
-  variable: '--font-heading',
+  variable: '--font-sans',
+  display: 'swap',
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const robotoMono = Roboto_Mono({
   subsets: ['latin'],
   variable: '--font-mono',
+  display: 'swap',
 });
 
 export const viewport: Viewport = {
@@ -29,7 +31,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
-      <body className={`${jetbrainsMono.variable} ${orbitron.variable}`}>
+      <body className={`${inter.variable} ${robotoMono.variable} font-sans antialiased bg-background text-foreground`}>
         {children}
       </body>
     </html>

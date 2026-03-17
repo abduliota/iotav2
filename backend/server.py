@@ -27,6 +27,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from simple_rag import answer_query
+from memory import (
+    maybe_update_session_summary,
+    maybe_write_episodic_from_exchange,
+    update_profile_from_exchange,
+)
 from users_sessions import (
     create_user,
     create_session,
@@ -107,7 +112,7 @@ def api_query(body: QueryBody):
             session_id = create_session(user_id)
             created_session = True
 
-        result = answer_query(body.query, session_id=session_id)
+        result = answer_query(body.query, user_id=user_id, session_id=session_id)
         answer = result.get("answer") or ""
         sources = result.get("sources") or []
 
@@ -117,6 +122,25 @@ def api_query(body: QueryBody):
             user_message=body.query,
             assistant_message=answer,
         )
+
+        # Best-effort memory updates (fail soft)
+        try:
+            update_profile_from_exchange(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=body.query,
+                assistant_message=answer,
+            )
+            maybe_update_session_summary(session_id=session_id, user_id=user_id)
+            maybe_write_episodic_from_exchange(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=body.query,
+                assistant_message=answer,
+                source_message_id=message_id,
+            )
+        except Exception:
+            pass
 
         out = {
             "answer": answer,
@@ -170,7 +194,12 @@ def api_query_stream(body: QueryBody):
         def run_rag() -> None:
             """Run answer_query in a background thread, streaming chunks via on_chunk."""
             try:
-                result = answer_query(body.query, session_id=session_id, on_chunk=on_chunk)
+                result = answer_query(
+                    body.query,
+                    user_id=user_id,
+                    session_id=session_id,
+                    on_chunk=on_chunk,
+                )
                 result_holder["result"] = result
             except Exception as e:  # pragma: no cover - defensive
                 result_holder["error"] = {"detail": str(e)}
@@ -204,6 +233,25 @@ def api_query_stream(body: QueryBody):
                 user_message=body.query,
                 assistant_message=answer,
             )
+
+            # Best-effort memory updates (fail soft)
+            try:
+                update_profile_from_exchange(
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_message=body.query,
+                    assistant_message=answer,
+                )
+                maybe_update_session_summary(session_id=session_id, user_id=user_id)
+                maybe_write_episodic_from_exchange(
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_message=body.query,
+                    assistant_message=answer,
+                    source_message_id=message_id,
+                )
+            except Exception:
+                pass
 
             meta = {
                 "user_id": user_id,

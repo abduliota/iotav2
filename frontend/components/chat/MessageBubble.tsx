@@ -91,16 +91,15 @@ function MessageBubbleComponent({
   };
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
       <div
-        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed border border-border cyber-chamfer-sm px-3 py-2.5 ${
-          isUser
-            ? 'bg-muted text-foreground border-accent/50'
-            : 'bg-card text-foreground'
-        }`}
+        className={`max-w-[90%] sm:max-w-[80%] text-sm leading-relaxed border px-4 py-3 shadow-sm ${isUser
+            ? 'bg-primary text-primary-foreground border-transparent rounded-2xl rounded-tr-sm'
+            : 'bg-card text-foreground border-border rounded-2xl rounded-tl-sm'
+          }`}
       >
         {isUser ? (
-          <div className="whitespace-pre-wrap break-words">
+          <div className="whitespace-pre-wrap break-words font-medium">
             {message.content}
           </div>
         ) : (
@@ -108,11 +107,11 @@ function MessageBubbleComponent({
             {isStreamingAssistant || !enableMarkdown || !shouldUseMarkdown ? (
               // Lightweight view while streaming and immediately after completion
               // (before markdown is enabled) to avoid heavy renders on large answers.
-              <div className="whitespace-pre-wrap break-words font-mono">
+              <div className="whitespace-pre-wrap break-words">
                 {message.content}
               </div>
             ) : (
-              <div className="chat-markdown prose prose-sm max-w-none prose-invert prose-pre:bg-transparent prose-pre:p-0 prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
+              <div className="chat-markdown prose prose-sm max-w-none prose-pre:bg-muted prose-pre:p-3 prose-pre:rounded-lg prose-code:text-xs prose-headings:font-semibold prose-headings:tracking-tight prose-p:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-ul:list-disc prose-ul:pl-5 prose-ol:list-decimal prose-ol:pl-5">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
@@ -130,22 +129,20 @@ function MessageBubbleComponent({
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     type="button"
-                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${
-                      !showSources
+                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${!showSources
                         ? 'bg-muted text-foreground border-accent'
                         : 'bg-card text-muted-foreground border-border hover:border-accent/50'
-                    }`}
+                      }`}
                     onClick={() => setShowSources(false)}
                   >
                     Answer
                   </button>
                   <button
                     type="button"
-                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${
-                      showSources
+                    className={`text-xs font-mono px-2 py-1 rounded-sm border transition-colors duration-150 ${showSources
                         ? 'bg-muted text-foreground border-accent'
                         : 'bg-card text-muted-foreground border-border hover:border-accent/50'
-                    }`}
+                      }`}
                     onClick={() => setShowSources(true)}
                   >
                     Sources ({message.references.length})
@@ -217,13 +214,12 @@ function MessageBubbleComponent({
                       aria-pressed={feedbackSent !== null && feedbackSent >= rating}
                     >
                       <Star
-                        className={`h-4 w-4 ${
-                          feedbackSent !== null
+                        className={`h-4 w-4 ${feedbackSent !== null
                             ? rating <= feedbackSent
                               ? 'fill-accent text-accent'
                               : 'text-muted-foreground'
                             : 'text-muted-foreground hover:text-accent'
-                        }`}
+                          }`}
                       />
                     </button>
                   ))}
